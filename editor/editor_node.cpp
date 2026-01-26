@@ -88,6 +88,7 @@
 #include "editor/docks/groups_dock.h"
 #include "editor/docks/history_dock.h"
 #include "editor/docks/import_dock.h"
+#include "editor/plugins/ai_assistant/ai_assistant_dock.h"
 #include "editor/docks/inspector_dock.h"
 #include "editor/docks/scene_tree_dock.h"
 #include "editor/docks/signals_dock.h"
@@ -8953,6 +8954,9 @@ EditorNode::EditorNode() {
 
 	history_dock = memnew(HistoryDock);
 	editor_dock_manager->add_dock(history_dock);
+
+	ai_assistant_dock = memnew(AIAssistantDock);
+	editor_dock_manager->add_dock(ai_assistant_dock);
 
 	// Add some offsets to make LEFT_R and RIGHT_L docks wider than minsize.
 	const int dock_hsize = 280;

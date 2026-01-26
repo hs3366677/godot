@@ -1,0 +1,47 @@
+{
+  "module_id": "input_handler",
+  "name": "Input Handler",
+  "version": "1.0",
+  "description": "Centralized input processing with support for multiple input schemes and rebinding",
+
+  "inputs": {
+    "config": {
+      "type": "InputConfig",
+      "properties": {
+        "deadzone": "float (default: 0.2)",
+        "input_scheme": "String (keyboard, gamepad, touch)"
+      }
+    }
+  },
+
+  "outputs": {
+    "movement_vector": {
+      "type": "Vector2",
+      "description": "Normalized movement input direction"
+    },
+    "is_action_pressed": {
+      "type": "Dictionary",
+      "description": "Map of action names to pressed state"
+    }
+  },
+
+  "signals": {
+    "input_scheme_changed": "Emitted when input device changes (String scheme)",
+    "action_pressed": "Emitted when any registered action is pressed (String action)",
+    "action_released": "Emitted when any registered action is released (String action)"
+  },
+
+  "methods": {
+    "get_movement_vector": "Returns Vector2 of current movement input",
+    "is_action_just_pressed": "Check if action was just pressed (String action) -> bool",
+    "is_action_pressed": "Check if action is held (String action) -> bool",
+    "rebind_action": "Rebind an action to new key (String action, InputEvent event)",
+    "reset_to_defaults": "Reset all bindings to defaults"
+  },
+
+  "dependencies": [],
+
+  "files": [
+    "res://modules/core/input_handler/input_handler.gd"
+  ]
+}

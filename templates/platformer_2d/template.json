@@ -1,0 +1,82 @@
+{
+  "id": "platformer_2d",
+  "name": "2D Platformer",
+  "version": "1.0",
+  "description": "Classic side-scrolling platformer with jumping, running, and enemies",
+
+  "keywords": ["platformer", "2d", "side-scroller", "jump", "run", "mario", "action"],
+
+  "modules_included": [
+    "player_movement",
+    "player_animation",
+    "level_manager",
+    "enemy_ai",
+    "game_manager"
+  ],
+
+  "features": {
+    "player": {
+      "movement": ["walk", "run", "jump", "double_jump"],
+      "actions": ["collect_items"]
+    },
+    "enemies": {
+      "types": ["walker", "jumper", "flyer"],
+      "behaviors": ["patrol", "chase", "shoot"]
+    },
+    "levels": {
+      "elements": ["platforms", "spikes", "springs", "checkpoints"],
+      "collectibles": ["coins", "power_ups", "keys"]
+    }
+  },
+
+  "customization_points": {
+    "theme": {
+      "options": ["forest", "cave", "sky", "industrial", "custom"],
+      "affects": ["tileset", "background", "enemies", "music"]
+    },
+    "difficulty": {
+      "parameters": {
+        "player_speed": {"min": 200, "max": 500, "default": 300},
+        "jump_height": {"min": 300, "max": 600, "default": 400},
+        "enemy_speed": {"min": 50, "max": 200, "default": 100},
+        "lives": {"min": 1, "max": 10, "default": 3}
+      }
+    },
+    "mechanics": {
+      "double_jump": {"type": "bool", "default": false},
+      "wall_jump": {"type": "bool", "default": false},
+      "dash": {"type": "bool", "default": false}
+    }
+  },
+
+  "file_structure": {
+    "scenes": [
+      "main_menu.tscn",
+      "game.tscn",
+      "player.tscn",
+      "enemy_walker.tscn",
+      "level_01.tscn"
+    ],
+    "scripts": [
+      "player.gd",
+      "enemy_base.gd",
+      "game_manager.gd",
+      "level_manager.gd"
+    ]
+  },
+
+  "ai_hints": {
+    "common_requests": [
+      "Make the player jump higher",
+      "Add a new enemy type",
+      "Create a new level",
+      "Add a power-up",
+      "Change the theme"
+    ],
+    "modification_patterns": {
+      "player_speed": "Modify player.gd: speed variable",
+      "jump_height": "Modify player.gd: jump_force variable",
+      "new_enemy": "Create new scene extending enemy_base.tscn"
+    }
+  }
+}

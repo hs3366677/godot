@@ -1,0 +1,58 @@
+{
+  "module_id": "game_manager",
+  "name": "Game Manager",
+  "version": "1.0",
+  "description": "Central game state management including pause, restart, game over, and scene transitions",
+
+  "inputs": {
+    "config": {
+      "type": "GameConfig",
+      "properties": {
+        "starting_lives": "int (default: 3)",
+        "main_menu_scene": "String (default: res://scenes/main_menu.tscn)",
+        "first_level_scene": "String"
+      }
+    }
+  },
+
+  "outputs": {
+    "current_state": {
+      "type": "GameState",
+      "enum": ["MENU", "PLAYING", "PAUSED", "GAME_OVER", "VICTORY"]
+    },
+    "score": {
+      "type": "int",
+      "description": "Current game score"
+    },
+    "lives": {
+      "type": "int",
+      "description": "Remaining lives"
+    }
+  },
+
+  "signals": {
+    "game_started": "Emitted when a new game begins",
+    "game_paused": "Emitted when game is paused (bool is_paused)",
+    "game_over": "Emitted when player loses all lives",
+    "game_won": "Emitted when player completes the game",
+    "score_changed": "Emitted when score changes (int new_score)",
+    "lives_changed": "Emitted when lives change (int new_lives)",
+    "state_changed": "Emitted when game state changes (GameState new_state)"
+  },
+
+  "methods": {
+    "start_game": "Begin a new game",
+    "pause_game": "Toggle pause state",
+    "restart_level": "Restart current level",
+    "quit_to_menu": "Return to main menu",
+    "add_score": "Add points to score (int amount)",
+    "lose_life": "Decrease lives by one"
+  },
+
+  "dependencies": [],
+
+  "files": [
+    "res://modules/core/game_manager/game_manager.gd",
+    "res://modules/core/game_manager/game_state.gd"
+  ]
+}

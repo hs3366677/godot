@@ -1,0 +1,22 @@
+{
+  "version": "1.0",
+  "description": "Registry of all available game modules for AI-assisted game creation",
+  "categories": {
+    "core": {
+      "description": "Essential game systems always available",
+      "modules": ["game_manager", "input_handler", "audio_manager", "save_system", "ui_manager"]
+    },
+    "player": {
+      "description": "Player-related functionality",
+      "modules": ["player_movement", "player_combat", "player_inventory", "player_stats", "player_animation"]
+    },
+    "world": {
+      "description": "World and level management",
+      "modules": ["level_manager", "tilemap_system", "spawn_system", "interaction_system", "dialogue_system"]
+    },
+    "game_logic": {
+      "description": "Game mechanics and systems",
+      "modules": ["enemy_ai", "combat_system", "quest_system", "economy_system", "achievement_system"]
+    }
+  }
+}

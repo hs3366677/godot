@@ -1,0 +1,53 @@
+{
+  "module_id": "enemy_ai",
+  "name": "Enemy AI System",
+  "version": "1.0",
+  "description": "Flexible enemy AI with behavior patterns including patrol, chase, flee, and attack",
+
+  "inputs": {
+    "config": {
+      "type": "EnemyAIConfig",
+      "properties": {
+        "detection_range": "float (default: 200)",
+        "attack_range": "float (default: 50)",
+        "lose_interest_range": "float (default: 400)",
+        "patrol_speed": "float (default: 100)",
+        "chase_speed": "float (default: 150)"
+      }
+    }
+  },
+
+  "outputs": {
+    "current_state": {
+      "type": "AIState",
+      "enum": ["IDLE", "PATROL", "CHASE", "ATTACK", "FLEE", "STUNNED"]
+    },
+    "target": {
+      "type": "Node2D",
+      "description": "Current target being tracked"
+    }
+  },
+
+  "signals": {
+    "state_changed": "Emitted when AI state changes (AIState old, AIState new)",
+    "target_detected": "Emitted when target enters detection range (Node2D target)",
+    "target_lost": "Emitted when target leaves tracking range",
+    "attack_started": "Emitted when attack begins",
+    "attack_finished": "Emitted when attack ends"
+  },
+
+  "methods": {
+    "set_patrol_points": "Set patrol waypoints (Array[Vector2] points)",
+    "set_target": "Manually set target (Node2D target)",
+    "clear_target": "Clear current target",
+    "stun": "Stun the AI for duration (float seconds)",
+    "set_behavior": "Change behavior pattern (String behavior)"
+  },
+
+  "dependencies": [],
+
+  "files": [
+    "res://modules/game_logic/enemy_ai/enemy_ai.gd",
+    "res://modules/game_logic/enemy_ai/ai_states.gd"
+  ]
+}

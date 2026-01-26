@@ -1,0 +1,48 @@
+{
+  "version": "1.0",
+  "description": "Registry of game templates for AI-assisted game creation",
+  "templates": [
+    {
+      "id": "platformer_2d",
+      "name": "2D Platformer",
+      "description": "Classic side-scrolling platformer with jumping and running",
+      "complexity": "beginner",
+      "tags": ["2d", "platformer", "action", "side-scroller"]
+    },
+    {
+      "id": "tower_defense",
+      "name": "Tower Defense",
+      "description": "Strategic tower defense with waves of enemies",
+      "complexity": "intermediate",
+      "tags": ["2d", "strategy", "tower-defense", "waves"]
+    },
+    {
+      "id": "rpg_topdown",
+      "name": "Top-Down RPG",
+      "description": "Classic RPG with stats, dialogue, and quests",
+      "complexity": "advanced",
+      "tags": ["2d", "rpg", "top-down", "story"]
+    },
+    {
+      "id": "shooter_topdown",
+      "name": "Top-Down Shooter",
+      "description": "Action shooter with enemies and weapons",
+      "complexity": "intermediate",
+      "tags": ["2d", "shooter", "action", "top-down"]
+    },
+    {
+      "id": "puzzle_match3",
+      "name": "Match-3 Puzzle",
+      "description": "Classic match-3 puzzle game",
+      "complexity": "beginner",
+      "tags": ["2d", "puzzle", "casual", "match-3"]
+    },
+    {
+      "id": "endless_runner",
+      "name": "Endless Runner",
+      "description": "Infinite side-scrolling runner game",
+      "complexity": "beginner",
+      "tags": ["2d", "casual", "endless", "runner"]
+    }
+  ]
+}

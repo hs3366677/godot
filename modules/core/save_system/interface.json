@@ -1,0 +1,50 @@
+{
+  "module_id": "save_system",
+  "name": "Save System",
+  "version": "1.0",
+  "description": "Game save/load functionality with multiple slots and auto-save support",
+
+  "inputs": {
+    "config": {
+      "type": "SaveConfig",
+      "properties": {
+        "save_directory": "String (default: user://saves/)",
+        "max_slots": "int (default: 3)",
+        "auto_save_enabled": "bool (default: true)",
+        "auto_save_interval": "float (default: 300.0 seconds)"
+      }
+    }
+  },
+
+  "outputs": {
+    "save_slots": {
+      "type": "Array[SaveSlotInfo]",
+      "description": "Information about available save slots"
+    },
+    "has_save_data": {
+      "type": "bool",
+      "description": "Whether any save data exists"
+    }
+  },
+
+  "signals": {
+    "game_saved": "Emitted when game is saved (int slot)",
+    "game_loaded": "Emitted when game is loaded (int slot)",
+    "save_deleted": "Emitted when save is deleted (int slot)",
+    "auto_save_triggered": "Emitted when auto-save occurs"
+  },
+
+  "methods": {
+    "save_game": "Save to slot (int slot, Dictionary data)",
+    "load_game": "Load from slot (int slot) -> Dictionary",
+    "delete_save": "Delete save slot (int slot)",
+    "has_save": "Check if slot has data (int slot) -> bool",
+    "get_save_info": "Get slot metadata (int slot) -> SaveSlotInfo"
+  },
+
+  "dependencies": [],
+
+  "files": [
+    "res://modules/core/save_system/save_system.gd"
+  ]
+}

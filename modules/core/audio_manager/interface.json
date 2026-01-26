@@ -1,0 +1,52 @@
+{
+  "module_id": "audio_manager",
+  "name": "Audio Manager",
+  "version": "1.0",
+  "description": "Centralized audio management for music and sound effects with volume control and pooling",
+
+  "inputs": {
+    "config": {
+      "type": "AudioConfig",
+      "properties": {
+        "master_volume": "float (0.0-1.0, default: 1.0)",
+        "music_volume": "float (0.0-1.0, default: 0.8)",
+        "sfx_volume": "float (0.0-1.0, default: 1.0)",
+        "sfx_pool_size": "int (default: 8)"
+      }
+    }
+  },
+
+  "outputs": {
+    "is_music_playing": {
+      "type": "bool",
+      "description": "Whether music is currently playing"
+    },
+    "current_music": {
+      "type": "String",
+      "description": "Path to currently playing music"
+    }
+  },
+
+  "signals": {
+    "music_started": "Emitted when music starts (String track_path)",
+    "music_stopped": "Emitted when music stops",
+    "music_finished": "Emitted when music track ends naturally",
+    "volume_changed": "Emitted when any volume changes (String bus, float volume)"
+  },
+
+  "methods": {
+    "play_music": "Play background music (String path, float fade_time)",
+    "stop_music": "Stop current music (float fade_time)",
+    "play_sfx": "Play sound effect (String path) -> AudioStreamPlayer",
+    "play_sfx_at": "Play positional sound (String path, Vector2 position)",
+    "set_master_volume": "Set master volume (float volume)",
+    "set_music_volume": "Set music volume (float volume)",
+    "set_sfx_volume": "Set SFX volume (float volume)"
+  },
+
+  "dependencies": [],
+
+  "files": [
+    "res://modules/core/audio_manager/audio_manager.gd"
+  ]
+}

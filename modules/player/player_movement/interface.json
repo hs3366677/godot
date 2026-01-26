@@ -1,0 +1,55 @@
+{
+  "module_id": "player_movement",
+  "name": "Player Movement System",
+  "version": "1.0",
+  "description": "Handles player character movement including walking, jumping, and collision",
+
+  "inputs": {
+    "input_actions": {
+      "type": "InputMap",
+      "description": "Player input bindings (move_left, move_right, jump)"
+    },
+    "character_body": {
+      "type": "CharacterBody2D",
+      "description": "The player node to control"
+    },
+    "config": {
+      "type": "MovementConfig",
+      "properties": {
+        "speed": "float (default: 300)",
+        "jump_force": "float (default: -400)",
+        "gravity": "float (default: 980)"
+      }
+    }
+  },
+
+  "outputs": {
+    "velocity": {
+      "type": "Vector2",
+      "description": "Current movement velocity"
+    },
+    "is_grounded": {
+      "type": "bool",
+      "description": "Whether player is on ground"
+    },
+    "facing_direction": {
+      "type": "int",
+      "description": "-1 for left, 1 for right"
+    }
+  },
+
+  "signals": {
+    "jumped": "Emitted when player jumps",
+    "landed": "Emitted when player lands on ground",
+    "direction_changed": "Emitted when facing direction changes"
+  },
+
+  "dependencies": [],
+
+  "files": [
+    "res://modules/player/player_movement/player_movement.gd",
+    "res://modules/player/player_movement/movement_config.tres"
+  ],
+
+  "example_usage": "var movement = PlayerMovement.new()\nmovement.speed = 400\nmovement.jump_force = -500"
+}

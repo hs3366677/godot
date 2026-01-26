@@ -1,0 +1,50 @@
+{
+  "module_id": "ui_manager",
+  "name": "UI Manager",
+  "version": "1.0",
+  "description": "Centralized UI management with screen transitions, popups, and HUD control",
+
+  "inputs": {
+    "config": {
+      "type": "UIConfig",
+      "properties": {
+        "transition_duration": "float (default: 0.3)",
+        "default_transition": "String (fade, slide, none)"
+      }
+    }
+  },
+
+  "outputs": {
+    "current_screen": {
+      "type": "String",
+      "description": "Currently active screen name"
+    },
+    "is_popup_open": {
+      "type": "bool",
+      "description": "Whether any popup is open"
+    }
+  },
+
+  "signals": {
+    "screen_changed": "Emitted when screen changes (String from, String to)",
+    "popup_opened": "Emitted when popup opens (String popup_name)",
+    "popup_closed": "Emitted when popup closes (String popup_name)",
+    "transition_started": "Emitted when transition begins",
+    "transition_finished": "Emitted when transition ends"
+  },
+
+  "methods": {
+    "show_screen": "Show a screen (String name, Transition type)",
+    "hide_screen": "Hide current screen",
+    "show_popup": "Show a popup (String name)",
+    "hide_popup": "Hide popup (String name)",
+    "hide_all_popups": "Close all open popups",
+    "update_hud": "Update HUD element (String element, Variant value)"
+  },
+
+  "dependencies": [],
+
+  "files": [
+    "res://modules/core/ui_manager/ui_manager.gd"
+  ]
+}
