@@ -2,8 +2,8 @@
 /*  ai_assistant_dock.h                                                   */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                           MAKABAKA ENGINE                              */
+/*                    AI-powered game creation module                     */
 /**************************************************************************/
 
 #pragma once
@@ -12,15 +12,19 @@
 
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/check_button.h"
 #include "scene/gui/color_rect.h"
 #include "scene/gui/label.h"
 #include "scene/gui/menu_button.h"
+#include "scene/gui/option_button.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/scroll_container.h"
+#include "scene/gui/tab_container.h"
 #include "scene/gui/text_edit.h"
+#include "scene/main/http_request.h"
+#include "scene/main/timer.h"
 
 #include "core/io/json.h"
-#include "modules/websocket/websocket_peer.h"
 
 class AIAssistantDock : public EditorDock {
 	GDCLASS(AIAssistantDock, EditorDock);
@@ -45,26 +49,97 @@ private:
 	HBoxContainer *toolbar_container = nullptr;
 	MenuButton *template_button = nullptr;
 	Button *clear_button = nullptr;
+	Button *verify_button = nullptr;
 	Button *reconnect_button = nullptr;
 	Label *status_label = nullptr;
 
+	// Model selector
+	HBoxContainer *model_selector_container = nullptr;
+	Label *model_label = nullptr;
+	OptionButton *model_selector = nullptr;
+	Button *model_refresh_button = nullptr;
+	HTTPRequest *model_http_request = nullptr;
+	bool model_request_in_progress = false;
+	String current_model_id;
+	Vector<Dictionary> available_models;
+
+	// Tab container for Chat and Logs
+	TabContainer *tab_container = nullptr;
+
+	// Chat tab
+	VBoxContainer *chat_tab = nullptr;
 	ScrollContainer *chat_scroll = nullptr;
 	VBoxContainer *chat_container = nullptr;
+	CheckButton *chat_auto_scroll = nullptr;
+	CheckButton *plan_mode_toggle = nullptr;
+	CheckButton *auto_accept_toggle = nullptr;
 
 	VBoxContainer *input_container = nullptr;
+	HBoxContainer *button_container = nullptr;
 	TextEdit *prompt_input = nullptr;
 	Button *send_button = nullptr;
+	Button *stop_button = nullptr;
 
-	// WebSocket connection
-	Ref<WebSocketPeer> websocket;
-	String service_url = "ws://localhost:8080";
+	// Mode flags
+	bool is_plan_mode = false;
+	bool is_auto_accept = false;
+
+	// Processing indicator
+	HBoxContainer *processing_container = nullptr;
+	Label *processing_label = nullptr;
+	Timer *processing_timer = nullptr;
+	int processing_dots = 0;
+
+	// Streaming updates (poll for message parts during processing)
+	HTTPRequest *stream_http_request = nullptr;
+	Timer *stream_poll_timer = nullptr;
+	String current_message_id;
+	int last_part_count = 0;
+	bool stream_request_in_progress = false;
+
+	// Track tool UI elements by part ID for status updates
+	HashMap<String, RichTextLabel *> tool_containers;
+	HashMap<String, uint64_t> tool_start_times; // Track when each tool started
+
+	// Logs tab
+	VBoxContainer *logs_tab = nullptr;
+	HBoxContainer *logs_toolbar = nullptr;
+	Button *logs_clear_button = nullptr;
+	Button *logs_refresh_button = nullptr;
+	CheckButton *logs_auto_scroll = nullptr;
+	ScrollContainer *logs_scroll = nullptr;
+	RichTextLabel *logs_text = nullptr;
+
+	// Log polling
+	HTTPRequest *logs_http_request = nullptr;
+	Timer *logs_poll_timer = nullptr;
+	String last_event_id;
+	bool logs_request_in_progress = false;
+
+	// Command polling (for auto-run from OpenCode)
+	HTTPRequest *command_http_request = nullptr;
+	Timer *command_poll_timer = nullptr;
+	bool command_request_in_progress = false;
+
+	// Question handling (AI asking user questions)
+	HTTPRequest *question_http_request = nullptr;
+	Timer *question_poll_timer = nullptr;
+	bool question_request_in_progress = false;
+	String current_question_id; // Track current question being displayed
+	VBoxContainer *question_container = nullptr; // UI container for question dialog
+
+	// Auto-verification after game runs
+	bool pending_auto_verify = false;
+
+	// Debugger error monitoring
+	int last_debugger_error_count = 0;
+	Vector<String> pending_debugger_errors;
+
+	// HTTP connection to OpenCode
+	HTTPRequest *http_request = nullptr;
+	String service_url = "http://localhost:4096";
+	String session_id;
 	ConnectionStatus connection_status = DISCONNECTED;
-
-	// AI Service process
-	OS::ProcessID service_pid = 0;
-	bool service_running = false;
-	String python_executable = "python";
-	String service_script_path;
 
 	// Chat history
 	Vector<Dictionary> chat_history;
@@ -74,31 +149,54 @@ private:
 	void _connect_signals();
 	void _update_connection_indicator();
 
-	// Service management
-	void _find_service_path();
-	void _start_ai_service();
-	void _stop_ai_service();
-	bool _is_service_running();
-
-	// WebSocket handling
-	void _connect_to_service();
-	void _disconnect_from_service();
-	void _process_websocket();
-	void _handle_websocket_message(const String &p_message);
-	void _send_websocket_message(const Dictionary &p_message);
+	// OpenCode HTTP API
+	String _get_project_directory() const;
+	Vector<String> _get_headers_with_directory() const;
+	void _check_service_health();
+	void _check_service_health_deferred();
+	void _create_session();
+	void _fetch_config();
+	void _send_message(const String &p_content);
+	void _on_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
 	// UI handlers
 	void _on_send_pressed();
+	void _on_stop_pressed();
 	void _on_clear_pressed();
 	void _on_reconnect_pressed();
 	void _on_template_selected(int p_id);
 	void _on_prompt_input_gui_input(const Ref<InputEvent> &p_event);
+	void _on_plan_mode_toggled(bool p_enabled);
+	void _on_auto_accept_toggled(bool p_enabled);
+
+	// Model selector handlers
+	void _fetch_available_models();
+	void _on_model_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_model_selected(int p_index);
+	void _update_model_config(const String &p_model_id);
+
+	// Processing indicator
+	void _show_processing();
+	void _hide_processing();
+	void _on_processing_timer_timeout();
+
+	// Streaming updates
+	void _start_stream_polling(const String &p_message_id);
+	void _stop_stream_polling();
+	void _on_stream_poll_timeout();
+	void _on_stream_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+
+	// Verification
+	void _on_verify_pressed();
+	String _read_game_logs();
 
 	// Message handling
 	void _add_message(const String &p_sender, const String &p_text, const Color &p_color);
 	void _add_user_message(const String &p_text);
 	void _add_ai_message(const String &p_text);
 	void _add_system_message(const String &p_text);
+	void _add_tool_message(const String &p_part_id, const String &p_tool_name, const String &p_status, const Dictionary &p_details);
+	void _clear_tool_tracking();
 
 	// Command processing
 	void _process_prompt(const String &p_prompt);
@@ -108,6 +206,59 @@ private:
 
 	// Status updates
 	void _update_status(const String &p_text, const Color &p_color);
+
+	// Logs handling
+	void _setup_logs_tab();
+	void _on_logs_clear_pressed();
+	void _on_logs_refresh_pressed();
+	void _on_logs_poll_timeout();
+	void _on_logs_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _add_log_entry(const String &p_type, const String &p_message, const Color &p_color);
+	void _fetch_session_events();
+
+	// Command polling (auto-run from OpenCode)
+	void _on_command_poll_timeout();
+	void _on_command_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _execute_godot_command(const String &p_action, const Dictionary &p_params);
+	void _report_game_status(bool p_running);
+
+	// Question handling (AI asking user questions)
+	void _on_question_poll_timeout();
+	void _on_question_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _show_question_dialog(const Dictionary &p_question);
+	void _hide_question_dialog();
+	void _on_question_option_pressed(int p_option_index);
+	void _on_question_custom_submitted();
+	void _send_question_reply(const String &p_request_id, const Array &p_answers);
+
+	// Auto-verification
+	void _on_game_stopped();
+	void _auto_verify_game_logs();
+
+	// Debugger error monitoring
+	void _check_debugger_errors();
+	void _on_debugger_error(const String &p_file, int p_line, int p_debugger_id);
+	void _on_debugger_output(const String &p_msg, int p_type);
+	void _send_debugger_errors_to_ai();
+
+	// Pending request type
+	enum RequestType {
+		REQUEST_NONE,
+		REQUEST_HEALTH,
+		REQUEST_SESSION_LIST,  // Find existing session
+		REQUEST_SESSION,       // Create new session
+		REQUEST_SESSION_HISTORY, // Load session messages
+		REQUEST_CONFIG,
+		REQUEST_MESSAGE
+	};
+	RequestType pending_request = REQUEST_NONE;
+
+	// Session persistence
+	HTTPRequest *session_list_http_request = nullptr;
+	void _find_existing_session();
+	void _on_session_list_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _load_session_history();
+	void _on_session_history_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
 protected:
 	void _notification(int p_what);
