@@ -16,11 +16,12 @@
 #include "scene/gui/color_rect.h"
 #include "scene/gui/label.h"
 #include "scene/gui/menu_button.h"
-#include "scene/gui/option_button.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/tab_container.h"
 #include "scene/gui/text_edit.h"
+#include "scene/gui/line_edit.h"
+#include "scene/gui/dialogs.h"
 #include "scene/main/http_request.h"
 #include "scene/main/timer.h"
 
@@ -35,6 +36,37 @@ public:
 		CONNECTING,
 		CONNECTED,
 		CONNECTION_ERROR
+	};
+
+	enum AuthState {
+		AUTH_IDLE,
+		AUTH_AUTHORIZING,
+		AUTH_POLLING
+	};
+
+	enum ProviderRequestType {
+		PROVIDER_REQUEST_NONE,
+		PROVIDER_REQUEST_FETCH_PROVIDERS,
+		PROVIDER_REQUEST_FETCH_AUTH_METHODS
+	};
+
+	struct ModelInfo {
+		String id;
+		String name;
+		String provider_id;
+	};
+
+	struct ProviderInfo {
+		String id;
+		String name;
+		bool connected = false;
+		Vector<ModelInfo> models;
+	};
+
+	struct ProviderNameComparator {
+		bool operator()(const ProviderInfo &a, const ProviderInfo &b) const {
+			return a.name.naturalnocasecmp_to(b.name) < 0;
+		}
 	};
 
 private:
@@ -53,15 +85,30 @@ private:
 	Button *reconnect_button = nullptr;
 	Label *status_label = nullptr;
 
-	// Model selector
-	HBoxContainer *model_selector_container = nullptr;
-	Label *model_label = nullptr;
-	OptionButton *model_selector = nullptr;
-	Button *model_refresh_button = nullptr;
+	// Model selector (two-level submenu: Provider → Models)
+	MenuButton *model_button = nullptr;
+	Vector<PopupMenu *> provider_submenus;
 	HTTPRequest *model_http_request = nullptr;
-	bool model_request_in_progress = false;
-	String current_model_id;
-	Vector<Dictionary> available_models;
+	ProviderRequestType provider_request_type = PROVIDER_REQUEST_NONE;
+
+	// Provider/model data
+	Vector<ProviderInfo> providers;
+	HashMap<String, Vector<Dictionary>> auth_methods;
+	String selected_provider_id;
+	String selected_model_id;
+
+	// Auth flow
+	HTTPRequest *http_auth_request = nullptr;
+	AuthState auth_state = AUTH_IDLE;
+	String pending_auth_provider_id;
+	int pending_auth_method_index = 0;
+	String pending_auth_method_type; // "code" or "redirect"
+	Timer *auth_poll_timer = nullptr;
+	int poll_attempts = 0;
+
+	// Auth code input dialog
+	AcceptDialog *auth_code_dialog = nullptr;
+	LineEdit *auth_code_input = nullptr;
 
 	// Tab container for Chat and Logs
 	TabContainer *tab_container = nullptr;
@@ -83,9 +130,9 @@ private:
 	// Mode flags
 	bool is_plan_mode = false;
 	bool is_auto_accept = false;
+	bool coding_standards_injected = false; // Reset per session
 
-	// Processing indicator
-	HBoxContainer *processing_container = nullptr;
+	// Processing indicator (overlay on prompt_input top-right)
 	Label *processing_label = nullptr;
 	Timer *processing_timer = nullptr;
 	int processing_dots = 0;
@@ -157,6 +204,8 @@ private:
 	void _create_session();
 	void _fetch_config();
 	void _send_message(const String &p_content);
+	String _load_coding_standards();
+	String _cached_coding_standards;
 	void _on_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
 	// UI handlers
@@ -169,11 +218,23 @@ private:
 	void _on_plan_mode_toggled(bool p_enabled);
 	void _on_auto_accept_toggled(bool p_enabled);
 
-	// Model selector handlers
-	void _fetch_available_models();
-	void _on_model_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-	void _on_model_selected(int p_index);
+	// Provider/model fetching
+	void _fetch_providers();
+	void _fetch_auth_methods();
+	void _on_provider_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+
+	// Model menu
+	void _populate_model_menu();
+	void _on_submenu_model_selected(int p_id);
+	void _update_model_button_text();
 	void _update_model_config(const String &p_model_id);
+
+	// Auth flow
+	void _start_auth_for_provider(const String &p_provider_id);
+	void _start_oauth_flow();
+	void _poll_oauth_callback();
+	void _on_auth_code_submitted();
+	void _on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
 	// Processing indicator
 	void _show_processing();

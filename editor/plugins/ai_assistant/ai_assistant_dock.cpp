@@ -104,25 +104,11 @@ void AIAssistantDock::_setup_ui() {
 	status_label->add_theme_font_size_override("font_size", 11);
 	toolbar_container->add_child(status_label);
 
-	// Model selector row
-	model_selector_container = memnew(HBoxContainer);
-	main_container->add_child(model_selector_container);
-
-	model_label = memnew(Label);
-	model_label->set_text("Model:");
-	model_label->add_theme_font_size_override("font_size", 11);
-	model_selector_container->add_child(model_label);
-
-	model_selector = memnew(OptionButton);
-	model_selector->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	model_selector->add_item("(not connected)", 0);
-	model_selector->set_disabled(true);
-	model_selector_container->add_child(model_selector);
-
-	model_refresh_button = memnew(Button);
-	model_refresh_button->set_text("↻");
-	model_refresh_button->set_tooltip_text("Refresh available models");
-	model_selector_container->add_child(model_refresh_button);
+	// Model selector (two-level submenu: Provider → Models)
+	model_button = memnew(MenuButton);
+	model_button->set_text("Select Model");
+	model_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	main_container->add_child(model_button);
 
 	// Tab container for Chat and Logs
 	tab_container = memnew(TabContainer);
@@ -208,16 +194,18 @@ void AIAssistantDock::_setup_ui() {
 	stop_button->add_theme_color_override("font_color", Color(1.0, 0.4, 0.4));
 	button_container->add_child(stop_button);
 
-	// Processing indicator (hidden by default)
-	processing_container = memnew(HBoxContainer);
-	processing_container->set_visible(false);
-	input_container->add_child(processing_container);
-
+	// Processing indicator — overlay on top-right of prompt_input
 	processing_label = memnew(Label);
 	processing_label->set_text("AI is thinking...");
-	processing_label->add_theme_color_override("font_color", Color(0.6, 0.8, 1.0));
-	processing_label->add_theme_font_size_override("font_size", 14);
-	processing_container->add_child(processing_label);
+	processing_label->add_theme_color_override("font_color", Color(0.6, 0.8, 1.0, 0.9));
+	processing_label->add_theme_font_size_override("font_size", 12);
+	processing_label->set_visible(false);
+	// Anchor to top-right of prompt_input
+	processing_label->set_anchors_preset(Control::PRESET_TOP_RIGHT);
+	processing_label->set_grow_direction_preset(Control::PRESET_TOP_RIGHT);
+	processing_label->set_offset(SIDE_RIGHT, -4);
+	processing_label->set_offset(SIDE_TOP, 2);
+	prompt_input->add_child(processing_label);
 
 	// Timer for processing animation
 	processing_timer = memnew(Timer);
@@ -279,6 +267,35 @@ void AIAssistantDock::_setup_ui() {
 	// HTTP Request node for session list (finding existing sessions)
 	session_list_http_request = memnew(HTTPRequest);
 	add_child(session_list_http_request);
+
+	// HTTP Request node for OAuth auth flow
+	http_auth_request = memnew(HTTPRequest);
+	add_child(http_auth_request);
+
+	// Timer for OAuth polling (redirect-based flow)
+	auth_poll_timer = memnew(Timer);
+	auth_poll_timer->set_wait_time(3.0);
+	auth_poll_timer->set_autostart(false);
+	add_child(auth_poll_timer);
+
+	// Auth code input dialog (for code-based OAuth flow)
+	auth_code_dialog = memnew(AcceptDialog);
+	auth_code_dialog->set_title("Enter Authorization Code");
+	auth_code_dialog->set_ok_button_text("Submit");
+	auth_code_dialog->set_min_size(Size2(400, 0));
+
+	VBoxContainer *dialog_vbox = memnew(VBoxContainer);
+	Label *dialog_label = memnew(Label);
+	dialog_label->set_text("Paste the authorization code from the browser:");
+	dialog_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD);
+	dialog_vbox->add_child(dialog_label);
+
+	auth_code_input = memnew(LineEdit);
+	auth_code_input->set_placeholder("Paste code here...");
+	dialog_vbox->add_child(auth_code_input);
+
+	auth_code_dialog->add_child(dialog_vbox);
+	add_child(auth_code_dialog);
 
 	// Initial status
 	_update_status("Disconnected", Color(0.5, 0.5, 0.5));
@@ -363,10 +380,13 @@ void AIAssistantDock::_connect_signals() {
 	stream_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_stream_http_request_completed));
 	stream_poll_timer->connect("timeout", callable_mp(this, &AIAssistantDock::_on_stream_poll_timeout));
 
-	// Model selector signals
-	model_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_model_http_request_completed));
-	model_selector->connect("item_selected", callable_mp(this, &AIAssistantDock::_on_model_selected));
-	model_refresh_button->connect("pressed", callable_mp(this, &AIAssistantDock::_fetch_available_models));
+	// Provider/model fetching signals (submenu signals connected in _populate_model_menu)
+	model_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_provider_request_completed));
+
+	// Auth flow signals
+	http_auth_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_auth_request_completed));
+	auth_code_dialog->connect("confirmed", callable_mp(this, &AIAssistantDock::_on_auth_code_submitted));
+	auth_poll_timer->connect("timeout", callable_mp(this, &AIAssistantDock::_poll_oauth_callback));
 
 	// Session list signals (for finding existing sessions)
 	session_list_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_session_list_completed));
@@ -454,9 +474,84 @@ String AIAssistantDock::_get_project_directory() const {
 	return ProjectSettings::get_singleton()->globalize_path("res://");
 }
 
+String AIAssistantDock::_load_coding_standards() {
+	// Return cached if already loaded.
+	if (!_cached_coding_standards.is_empty()) {
+		return _cached_coding_standards;
+	}
+
+	// Locate the docs/ directory relative to the engine executable.
+	// Executable is at: <engine_root>/godot/bin/godot.exe
+	// Docs are at:      <engine_root>/docs/
+	String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+	String docs_dir = exe_dir.path_join("..").path_join("..").path_join("docs").simplify_path();
+
+	Ref<DirAccess> dir = DirAccess::open(docs_dir);
+	if (dir.is_null()) {
+		print_line("[AIAssistant] Could not open docs directory: " + docs_dir);
+		return "";
+	}
+
+	// Recursively collect all .md files.
+	Vector<String> md_files;
+	Vector<String> dirs_to_scan;
+	dirs_to_scan.push_back(docs_dir);
+
+	while (dirs_to_scan.size() > 0) {
+		String current_dir = dirs_to_scan[dirs_to_scan.size() - 1];
+		dirs_to_scan.remove_at(dirs_to_scan.size() - 1);
+
+		Ref<DirAccess> d = DirAccess::open(current_dir);
+		if (d.is_null()) {
+			continue;
+		}
+		d->list_dir_begin();
+		String entry = d->get_next();
+		while (!entry.is_empty()) {
+			String full_path = current_dir.path_join(entry);
+			if (d->current_is_dir()) {
+				if (entry != "." && entry != "..") {
+					dirs_to_scan.push_back(full_path);
+				}
+			} else if (entry.ends_with(".md")) {
+				md_files.push_back(full_path);
+			}
+			entry = d->get_next();
+		}
+		d->list_dir_end();
+	}
+
+	// Sort for deterministic order.
+	md_files.sort();
+
+	// Read and combine all files.
+	String combined = "[CODING STANDARDS] Follow these rules when generating or modifying GDScript game code.\n\n";
+
+	for (int i = 0; i < md_files.size(); i++) {
+		Ref<FileAccess> f = FileAccess::open(md_files[i], FileAccess::READ);
+		if (f.is_valid()) {
+			String relative = md_files[i].replace(docs_dir + "/", "");
+			combined += "=== " + relative + " ===\n";
+			combined += f->get_as_text();
+			combined += "\n\n";
+			print_line("[AIAssistant] Loaded coding standard: " + relative);
+		}
+	}
+
+	if (md_files.size() == 0) {
+		print_line("[AIAssistant] No .md files found in: " + docs_dir);
+		return "";
+	}
+
+	print_line("[AIAssistant] Loaded " + itos(md_files.size()) + " coding standard files from " + docs_dir);
+	_cached_coding_standards = combined;
+	return _cached_coding_standards;
+}
+
 Vector<String> AIAssistantDock::_get_headers_with_directory() const {
 	Vector<String> headers;
 	headers.push_back("Content-Type: application/json");
+	headers.push_back("Accept: application/json");
 	headers.push_back("x-opencode-directory: " + _get_project_directory());
 	return headers;
 }
@@ -471,8 +566,9 @@ void AIAssistantDock::_check_service_health() {
 	_update_status("Checking service...", Color(1, 1, 0));
 	_update_connection_indicator();
 
-	String url = service_url + "/godot/health?directory=" + _get_project_directory().uri_encode();
-	http_request->request(url, _get_headers_with_directory());
+	String url = service_url + "/global/health";
+	Vector<String> headers = _get_headers_with_directory();
+	http_request->request(url, headers);
 }
 
 void AIAssistantDock::_create_session() {
@@ -527,10 +623,24 @@ void AIAssistantDock::_send_message(const String &p_content) {
 	// The AI processes in background and we poll for the response
 	String url = service_url + "/session/" + session_id + "/prompt_async?directory=" + _get_project_directory().uri_encode();
 
-	// Build the message content with mode prefixes
-	String message_content = p_content;
+	// Build parts array for the message
+	Array parts;
 
-	// Add mode instructions if enabled
+	// Inject coding standards as a separate part on first message of each session.
+	// Sent as its own part so it's hidden from the chat UI (filtered in _add_user_message).
+	if (!coding_standards_injected) {
+		String standards = _load_coding_standards();
+		if (!standards.is_empty()) {
+			coding_standards_injected = true;
+			Dictionary standards_part;
+			standards_part["type"] = "text";
+			standards_part["text"] = standards;
+			parts.push_back(standards_part);
+		}
+	}
+
+	// Build the user message with mode prefixes
+	String message_content = p_content;
 	if (is_plan_mode) {
 		message_content = "[PLAN MODE] Before making any changes, first create a detailed plan and present it for approval. Do not make changes until the plan is approved.\n\n" + message_content;
 	}
@@ -538,18 +648,22 @@ void AIAssistantDock::_send_message(const String &p_content) {
 		message_content = "[AUTO-ACCEPT] You have permission to automatically apply all file edits without asking for confirmation.\n\n" + message_content;
 	}
 
-	// Build the message in OpenCode's expected format
-	// API expects: { sessionID, parts: [{ type: "text", text: "..." }] }
 	Dictionary text_part;
 	text_part["type"] = "text";
 	text_part["text"] = message_content;
-
-	Array parts;
 	parts.push_back(text_part);
 
 	Dictionary body;
 	body["sessionID"] = session_id;
 	body["parts"] = parts;
+
+	// Include selected model so OpenCode uses the right provider/model
+	if (!selected_provider_id.is_empty() && !selected_model_id.is_empty()) {
+		Dictionary model;
+		model["providerID"] = selected_provider_id;
+		model["modelID"] = selected_model_id;
+		body["model"] = model;
+	}
 
 	String json_body = JSON::stringify(body);
 	http_request->request(url, _get_headers_with_directory(), HTTPClient::METHOD_POST, json_body);
@@ -644,7 +758,7 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 
 	switch (request_type) {
 		case REQUEST_HEALTH: {
-			if (p_code == 200 && response_data.has("status") && String(response_data["status"]) == "ok") {
+			if (p_code == 200 && response_data.has("healthy") && bool(response_data["healthy"]) == true) {
 				_add_system_message("AI service is running. Looking for existing session...");
 				_find_existing_session();
 			} else {
@@ -658,6 +772,7 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 		case REQUEST_SESSION: {
 			if (p_code == 200 && response_data.has("id")) {
 				session_id = response_data["id"];
+				coding_standards_injected = false;
 				connection_status = CONNECTED;
 				_update_status("Connected", Color(0, 1, 0));
 				_update_connection_indicator();
@@ -691,12 +806,17 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 			if (p_code == 200) {
 				// Extract saved model from config
 				if (response_data.has("model")) {
-					current_model_id = response_data["model"];
-					print_line("AIAssistant: Loaded saved model from config: " + current_model_id);
+					String saved_model = response_data["model"];
+					int slash = saved_model.find("/");
+					if (slash >= 0) {
+						selected_provider_id = saved_model.substr(0, slash);
+						selected_model_id = saved_model.substr(slash + 1);
+					}
+					print_line("AIAssistant: Loaded saved model from config: " + saved_model);
 				}
 			}
-			// Always fetch available models after config (even if config failed)
-			_fetch_available_models();
+			// Always fetch available providers/models after config (even if config failed)
+			_fetch_providers();
 		} break;
 
 		case REQUEST_MESSAGE: {
@@ -819,6 +939,7 @@ void AIAssistantDock::_on_reconnect_pressed() {
 		_hide_question_dialog();
 		// Disconnect
 		session_id = "";
+		coding_standards_injected = false;
 		connection_status = DISCONNECTED;
 		_update_status("Disconnected", Color(0.5, 0.5, 0.5));
 		_update_connection_indicator();
@@ -943,12 +1064,15 @@ void AIAssistantDock::_add_message(const String &p_sender, const String &p_text,
 
 	// Scroll to bottom if auto-scroll is enabled
 	if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
-		callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(
-				chat_scroll->get_v_scroll_bar()->get_max());
+		callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(INT32_MAX);
 	}
 }
 
 void AIAssistantDock::_add_user_message(const String &p_text) {
+	// Skip injected coding standards — they're internal context, not user-visible.
+	if (p_text.begins_with("[CODING STANDARDS]")) {
+		return;
+	}
 	_add_message("You", p_text, Color(0.4, 0.6, 1.0));
 }
 
@@ -1047,61 +1171,115 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 			return formatted;
 		}
 
-		// Extract brief info from input
+		// Extract brief info from input for display.
+		// OpenCode tool input keys use camelCase.
+		// The "input" dict may be empty during "pending" state;
+		// fall back to parsing the "raw" JSON string if available.
 		String input_info;
-		// Debug: print state keys for pending tools
-		if (status == "pending") {
-			Array keys = details.keys();
-			String keys_str = "";
-			for (int ki = 0; ki < keys.size(); ki++) {
-				if (ki > 0) keys_str += ", ";
-				keys_str += String(keys[ki]);
-			}
-			print_line("AIAssistant: Tool " + tool_name + " state keys: [" + keys_str + "]");
-		}
+		Dictionary in;
 		if (details.has("input")) {
 			Variant input_var = details["input"];
-			// Debug: print input type
-			if (status == "pending") {
-				print_line("AIAssistant: Tool " + tool_name + " input type: " + itos(input_var.get_type()) + " (DICT=" + itos(Variant::DICTIONARY) + ")");
-				if (input_var.get_type() == Variant::DICTIONARY) {
-					Dictionary input_dict = input_var;
-					Array input_keys = input_dict.keys();
-					String input_keys_str = "";
-					for (int ki = 0; ki < input_keys.size(); ki++) {
-						if (ki > 0) input_keys_str += ", ";
-						input_keys_str += String(input_keys[ki]);
+			if (input_var.get_type() == Variant::DICTIONARY) {
+				in = input_var;
+			}
+		}
+		// If input dict is empty, try parsing "raw" field (JSON string of the input)
+		if (in.is_empty() && details.has("raw")) {
+			Variant raw_var = details["raw"];
+			if (raw_var.get_type() == Variant::STRING) {
+				String raw_str = raw_var;
+				if (!raw_str.is_empty()) {
+					Variant parsed = JSON::parse_string(raw_str);
+					if (parsed.get_type() == Variant::DICTIONARY) {
+						in = parsed;
 					}
-					print_line("AIAssistant: Tool " + tool_name + " input keys: [" + input_keys_str + "]");
 				}
 			}
-			if (input_var.get_type() == Variant::DICTIONARY) {
-				Dictionary input_dict = input_var;
-				// Try common keys for brief info
-				if (input_dict.has("file_path")) {
-					input_info = input_dict["file_path"];
-				} else if (input_dict.has("filePath")) {
-					input_info = input_dict["filePath"];
-				} else if (input_dict.has("path")) {
-					input_info = input_dict["path"];
-				} else if (input_dict.has("pattern")) {
-					input_info = input_dict["pattern"];
-				} else if (input_dict.has("command")) {
-					input_info = input_dict["command"];
-				} else if (input_dict.has("query")) {
-					input_info = input_dict["query"];
-				} else if (!input_dict.is_empty()) {
-					// Use first string value as brief info
-					Array keys = input_dict.keys();
-					for (int i = 0; i < keys.size(); i++) {
-						Variant val = input_dict[keys[i]];
-						if (val.get_type() == Variant::STRING) {
-							String str_val = val;
-							if (!str_val.is_empty()) {
-								input_info = str_val;
-								break;
-							}
+		}
+		if (!in.is_empty()) {
+			// --- File tools: read, write, edit, multiedit ---
+			if (in.has("filePath")) {
+				input_info = in["filePath"];
+			}
+			// --- bash ---
+			else if (in.has("command")) {
+				// Prefer description (human-readable) over raw command
+				if (in.has("description")) {
+					input_info = in["description"];
+				} else {
+					input_info = in["command"];
+				}
+			}
+			// --- glob, grep ---
+			else if (in.has("pattern")) {
+				input_info = in["pattern"];
+				if (in.has("path")) {
+					input_info += " in " + String(in["path"]);
+				}
+			}
+			// --- websearch, codesearch ---
+			else if (in.has("query")) {
+				input_info = in["query"];
+			}
+			// --- webfetch ---
+			else if (in.has("url")) {
+				input_info = in["url"];
+			}
+			// --- lsp ---
+			else if (in.has("operation")) {
+				input_info = in["operation"];
+				if (in.has("filePath")) {
+					input_info += " " + String(in["filePath"]);
+				}
+			}
+			// --- skill ---
+			else if (in.has("name")) {
+				input_info = in["name"];
+			}
+			// --- list ---
+			else if (in.has("path")) {
+				input_info = in["path"];
+			}
+			// --- todowrite ---
+			else if (in.has("todos")) {
+				Variant todos_var = in["todos"];
+				if (todos_var.get_type() == Variant::ARRAY) {
+					Array todos = todos_var;
+					for (int ti = 0; ti < todos.size(); ti++) {
+						if (((Dictionary)todos[ti]).get("status", "") == String("in_progress")) {
+							input_info = ((Dictionary)todos[ti]).get("activeForm", ((Dictionary)todos[ti]).get("content", ""));
+							break;
 						}
+					}
+					if (input_info.is_empty() && todos.size() > 0) {
+						input_info = itos(todos.size()) + " todos";
+					}
+				}
+			}
+			// --- batch ---
+			else if (in.has("tool_calls")) {
+				Variant tc = in["tool_calls"];
+				if (tc.get_type() == Variant::ARRAY) {
+					input_info = itos(((Array)tc).size()) + " tool calls";
+				}
+			}
+			// --- apply_patch ---
+			else if (in.has("patchText")) {
+				String patch = in["patchText"];
+				int nl = patch.find("\n");
+				input_info = (nl >= 0) ? patch.substr(0, nl) : patch;
+			}
+			// --- Fallback: first string or array value ---
+			else {
+				Array keys = in.keys();
+				for (int i = 0; i < keys.size(); i++) {
+					Variant val = in[keys[i]];
+					if (val.get_type() == Variant::STRING && !String(val).is_empty()) {
+						input_info = val;
+						break;
+					} else if (val.get_type() == Variant::ARRAY) {
+						input_info = itos(((Array)val).size()) + " items";
+						break;
 					}
 				}
 			}
@@ -1111,17 +1289,7 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 		// For running: show input info
 		// For completed: show title (more human-readable)
 		// For error: show input info + full error on new line
-		if (status == "pending") {
-			// Pending tools may not have input yet - it's populated when transitioning to running
-			if (!input_info.is_empty()) {
-				if (input_info.length() > 80) {
-					input_info = input_info.substr(0, 80) + "...";
-				}
-				formatted += " [color=#aaaaaa]" + input_info + "[/color]";
-			} else {
-				formatted += " [color=#888888]preparing...[/color]";
-			}
-		} else if (status == "running") {
+		if (status == "running") {
 			// Running tools should have input
 			if (!input_info.is_empty()) {
 				if (input_info.length() > 80) {
@@ -1199,8 +1367,7 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 
 	// Scroll to bottom if auto-scroll is enabled
 	if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
-		callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(
-				chat_scroll->get_v_scroll_bar()->get_max());
+		callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(INT32_MAX);
 	}
 }
 
@@ -1217,33 +1384,31 @@ void AIAssistantDock::_update_status(const String &p_text, const Color &p_color)
 }
 
 void AIAssistantDock::_show_processing() {
-	if (processing_container) {
-		processing_container->set_visible(true);
+	if (processing_label) {
+		processing_label->set_visible(true);
 		processing_dots = 0;
 		processing_label->set_text("AI is thinking");
 		processing_timer->start();
-		// Disable send button and show stop button while processing
-		if (send_button) {
-			send_button->set_disabled(true);
-		}
-		if (stop_button) {
-			stop_button->set_visible(true);
-		}
+	}
+	if (send_button) {
+		send_button->set_disabled(true);
+	}
+	if (stop_button) {
+		stop_button->set_visible(true);
 	}
 }
 
 void AIAssistantDock::_hide_processing() {
-	if (processing_container) {
-		processing_container->set_visible(false);
+	if (processing_label) {
+		processing_label->set_visible(false);
 		processing_timer->stop();
 		processing_dots = 0;
-		// Re-enable send button and hide stop button
-		if (send_button) {
-			send_button->set_disabled(false);
-		}
-		if (stop_button) {
-			stop_button->set_visible(false);
-		}
+	}
+	if (send_button) {
+		send_button->set_disabled(false);
+	}
+	if (stop_button) {
+		stop_button->set_visible(false);
 	}
 	// Stop stream polling when processing is done
 	_stop_stream_polling();
@@ -1363,13 +1528,15 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 			Dictionary state = part.get("state", Dictionary());
 			String status = state.get("status", "unknown");
 
-			// Debug: print raw state for pending tools
-			if (status == "pending") {
-				print_line("AIAssistant: [STREAM] Tool " + tool_name + " pending state: " + JSON::stringify(state));
-			}
 
 			// Skip showing question tool in chat - it's handled via question dialog
 			if (tool_name == "question") {
+				continue;
+			}
+
+			// Skip pending tools — input is empty during pending state.
+			// Only show tools once they transition to running/completed/error.
+			if (status == "pending") {
 				continue;
 			}
 
@@ -1439,7 +1606,14 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 		if (info.has("error")) {
 			Dictionary error = info["error"];
 			String error_name = error.get("name", "unknown");
-			String error_msg = error.get("message", "An error occurred");
+			// The actual message is nested in error.data.message
+			String error_msg;
+			if (error.has("data") && Dictionary(error["data"]).has("message")) {
+				Dictionary data = error["data"];
+				error_msg = String(data["message"]);
+			} else {
+				error_msg = error.get("message", "An error occurred");
+			}
 			_add_system_message("Error (" + error_name + "): " + error_msg);
 			_add_log_entry("ERROR", error_name + ": " + error_msg, Color(1.0, 0.4, 0.4));
 		}
@@ -1676,8 +1850,7 @@ void AIAssistantDock::_on_logs_http_request_completed(int p_result, int p_code, 
 
 	// Auto-scroll if enabled
 	if (logs_auto_scroll->is_pressed()) {
-		callable_mp(logs_scroll, &ScrollContainer::set_v_scroll).call_deferred(
-				logs_scroll->get_v_scroll_bar()->get_max());
+		callable_mp(logs_scroll, &ScrollContainer::set_v_scroll).call_deferred(INT32_MAX);
 	}
 }
 
@@ -1989,6 +2162,7 @@ void AIAssistantDock::_on_session_list_completed(int p_result, int p_code, const
 	}
 
 	session_id = session["id"];
+	coding_standards_injected = false;
 	String title = session.get("title", "Untitled");
 
 	connection_status = CONNECTED;
@@ -2037,7 +2211,8 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 	// Clean up the temporary HTTPRequest
 	HTTPRequest *sender = Object::cast_to<HTTPRequest>(get_child(get_child_count() - 1));
 	if (sender && sender != http_request && sender != session_list_http_request &&
-		sender != model_http_request && sender != logs_http_request &&
+		sender != model_http_request && sender != http_auth_request &&
+		sender != logs_http_request &&
 		sender != stream_http_request && sender != command_http_request &&
 		sender != question_http_request) {
 		sender->queue_free();
@@ -2119,193 +2294,350 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 	_add_system_message("[History] Chat history loaded.");
 }
 
-// === Model Selector Functions ===
+// === Provider/Model Fetching + Auth Flow ===
 
-void AIAssistantDock::_fetch_available_models() {
-	if (model_request_in_progress) {
-		print_line("AIAssistant: _fetch_available_models called but request in progress, skipping");
+void AIAssistantDock::_fetch_providers() {
+	if (provider_request_type != PROVIDER_REQUEST_NONE) {
 		return;
 	}
 
-	print_line("AIAssistant: _fetch_available_models starting...");
-	model_request_in_progress = true;
-	// Don't pass directory parameter - we want global provider list, not project-specific
-	// Project-specific providers may not have all auth configured
+	provider_request_type = PROVIDER_REQUEST_FETCH_PROVIDERS;
 	String url = service_url + "/provider";
-	print_line("AIAssistant: Requesting models from: " + url);
-	Error err = model_http_request->request(url, _get_headers_with_directory());
+
+	print_line("[AIAssistant] Fetching providers: GET " + url);
+
+	Vector<String> headers = _get_headers_with_directory();
+	headers.push_back("Accept: application/json");
+	Error err = model_http_request->request(url, headers);
 	if (err != OK) {
-		print_line("AIAssistant: HTTP request failed with error: " + itos(err));
-		model_request_in_progress = false;
+		print_line("[AIAssistant] Failed to fetch providers");
+		provider_request_type = PROVIDER_REQUEST_NONE;
 	}
 }
 
-void AIAssistantDock::_on_model_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	model_request_in_progress = false;
+void AIAssistantDock::_fetch_auth_methods() {
+	if (provider_request_type != PROVIDER_REQUEST_NONE) {
+		return;
+	}
 
-	print_line("AIAssistant: Model request completed, result=" + itos(p_result) + ", code=" + itos(p_code));
+	provider_request_type = PROVIDER_REQUEST_FETCH_AUTH_METHODS;
+	String url = service_url + "/provider/auth";
+
+	print_line("[AIAssistant] Fetching auth methods: GET " + url);
+
+	Vector<String> headers = _get_headers_with_directory();
+	headers.push_back("Accept: application/json");
+	Error err = model_http_request->request(url, headers);
+	if (err != OK) {
+		print_line("[AIAssistant] Failed to fetch auth methods");
+		provider_request_type = PROVIDER_REQUEST_NONE;
+	}
+}
+
+void AIAssistantDock::_on_provider_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	String body_str;
+	if (p_body.size() > 0) {
+		body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+	}
+
+	print_line("[AIAssistant] Provider HTTP response (type=" + itos(provider_request_type) + "): code=" + itos(p_code) + " body_size=" + itos(p_body.size()));
 
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		_add_log_entry("ERROR", "Failed to fetch models (result=" + itos(p_result) + ", code=" + itos(p_code) + ")", Color(1, 0.4, 0.4));
+		print_line("[AIAssistant] Request failed: result=" + itos(p_result) + " code=" + itos(p_code));
+		if (body_str.length() > 0) {
+			print_line("[AIAssistant] Response body (first 200 chars): " + body_str.substr(0, 200));
+		}
+		if (provider_request_type == PROVIDER_REQUEST_FETCH_PROVIDERS) {
+			_add_log_entry("ERROR", "Failed to fetch providers", Color(1, 0.4, 0.4));
+		}
+		provider_request_type = PROVIDER_REQUEST_NONE;
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
-	print_line("AIAssistant: Response size=" + itos(response_text.length()));
-	JSON json;
-	Error err = json.parse(response_text);
+	switch (provider_request_type) {
+		case PROVIDER_REQUEST_FETCH_PROVIDERS: {
+			provider_request_type = PROVIDER_REQUEST_NONE;
 
-	if (err != OK) {
-		_add_log_entry("ERROR", "Invalid models response", Color(1, 0.4, 0.4));
-		print_line("AIAssistant: JSON parse error");
+			Variant result = JSON::parse_string(body_str);
+			if (result.get_type() != Variant::DICTIONARY) {
+				print_line("[AIAssistant] Failed to parse providers JSON");
+				return;
+			}
+
+			Dictionary resp = result;
+			Array all = resp.get("all", Array());
+			Dictionary defaults = resp.get("default", Dictionary());
+			Array connected = resp.get("connected", Array());
+
+			// Build connected set.
+			HashSet<String> connected_set;
+			for (int i = 0; i < connected.size(); i++) {
+				connected_set.insert(String(connected[i]));
+			}
+
+			// Preserve locally-authenticated provider (may not be in server response yet).
+			if (!pending_auth_provider_id.is_empty() && auth_state == AUTH_IDLE) {
+				for (int i = 0; i < providers.size(); i++) {
+					if (providers[i].id == pending_auth_provider_id && providers[i].connected) {
+						connected_set.insert(pending_auth_provider_id);
+						break;
+					}
+				}
+			}
+
+			// Parse providers and models.
+			providers.clear();
+			for (int i = 0; i < all.size(); i++) {
+				if (all[i].get_type() != Variant::DICTIONARY) {
+					continue;
+				}
+				Dictionary prov = all[i];
+				ProviderInfo pi;
+				pi.id = prov.get("id", "");
+				pi.name = prov.get("name", pi.id);
+				pi.connected = connected_set.has(pi.id);
+
+				if (prov.has("models")) {
+					Dictionary models_dict = prov["models"];
+					Array model_keys = models_dict.keys();
+					for (int k = 0; k < model_keys.size(); k++) {
+						String model_key = model_keys[k];
+						Dictionary model_data = models_dict[model_key];
+						ModelInfo mi;
+						mi.id = model_data.get("id", model_key);
+						mi.name = model_data.get("name", mi.id);
+						mi.provider_id = pi.id;
+
+						// Filter: skip thinking variants and dated versions.
+						bool is_thinking = mi.id.contains("-thinking");
+						bool is_dated = false;
+						if (mi.id.length() > 9) {
+							String suffix = mi.id.substr(mi.id.length() - 9, 9);
+							if (suffix.begins_with("-20") && suffix.substr(1).is_valid_int()) {
+								is_dated = true;
+							}
+						}
+						if (mi.id.contains("@20")) {
+							is_dated = true;
+						}
+						String full_id = pi.id + "/" + mi.id;
+						if ((is_thinking || is_dated) && full_id != (selected_provider_id + "/" + selected_model_id)) {
+							continue;
+						}
+
+						pi.models.push_back(mi);
+					}
+				}
+
+				if (pi.models.size() > 0) {
+					providers.push_back(pi);
+				}
+			}
+
+			// Sort providers alphabetically by name.
+			providers.sort_custom<ProviderNameComparator>();
+
+			// Auto-select default model if none selected.
+			if (selected_model_id.is_empty() && defaults.size() > 0) {
+				Array def_keys = defaults.keys();
+				for (int i2 = 0; i2 < def_keys.size(); i2++) {
+					String prov_id = def_keys[i2];
+					if (connected_set.has(prov_id)) {
+						selected_provider_id = prov_id;
+						selected_model_id = String(defaults[prov_id]);
+						break;
+					}
+				}
+			}
+
+			print_line("[AIAssistant] Parsed " + itos(providers.size()) + " providers, " + itos(connected_set.size()) + " connected");
+
+			_populate_model_menu();
+			_update_model_button_text();
+
+			int total_models = 0;
+			for (int i = 0; i < providers.size(); i++) {
+				total_models += providers[i].models.size();
+			}
+			_add_system_message("Loaded " + itos(total_models) + " models from " + itos(providers.size()) + " provider(s).");
+
+			// Chain: fetch auth methods next.
+			_fetch_auth_methods();
+		} break;
+
+		case PROVIDER_REQUEST_FETCH_AUTH_METHODS: {
+			provider_request_type = PROVIDER_REQUEST_NONE;
+
+			Variant result = JSON::parse_string(body_str);
+			if (result.get_type() != Variant::DICTIONARY) {
+				print_line("[AIAssistant] Failed to parse auth methods JSON");
+				return;
+			}
+
+			Dictionary resp = result;
+			auth_methods.clear();
+			Array keys = resp.keys();
+			for (int i = 0; i < keys.size(); i++) {
+				String provider_id = keys[i];
+				Array methods = resp[provider_id];
+				Vector<Dictionary> method_list;
+				for (int j = 0; j < methods.size(); j++) {
+					if (methods[j].get_type() == Variant::DICTIONARY) {
+						method_list.push_back(methods[j]);
+					}
+				}
+				auth_methods.insert(provider_id, method_list);
+			}
+
+			print_line("[AIAssistant] Loaded auth methods for " + itos(auth_methods.size()) + " providers");
+		} break;
+
+		default:
+			provider_request_type = PROVIDER_REQUEST_NONE;
+			break;
+	}
+}
+
+// === Model Menu (Two-Level Submenu) ===
+
+void AIAssistantDock::_populate_model_menu() {
+	PopupMenu *popup = model_button->get_popup();
+	popup->clear();
+
+	// Clean up old submenus.
+	for (int i = 0; i < provider_submenus.size(); i++) {
+		provider_submenus[i]->queue_free();
+	}
+	provider_submenus.clear();
+
+	for (int i = 0; i < providers.size(); i++) {
+		const ProviderInfo &prov = providers[i];
+
+		// Create a submenu for this provider.
+		PopupMenu *sub = memnew(PopupMenu);
+		sub->set_name("provider_" + itos(i));
+		sub->connect("id_pressed", callable_mp(this, &AIAssistantDock::_on_submenu_model_selected));
+		provider_submenus.push_back(sub);
+
+		// Add models to the submenu.
+		for (int j = 0; j < prov.models.size(); j++) {
+			const ModelInfo &model = prov.models[j];
+			int item_id = i * 1000 + j;
+
+			sub->add_item(model.name, item_id);
+
+			int idx = sub->get_item_index(item_id);
+			sub->set_item_metadata(idx, prov.id + "/" + model.id);
+
+			// Mark selected model with a checkmark.
+			if (prov.id == selected_provider_id && model.id == selected_model_id) {
+				sub->set_item_checked(idx, true);
+			}
+		}
+
+		// Add submenu to main popup with provider name.
+		String label = prov.name;
+		if (!prov.connected) {
+			label += " [Not Connected]";
+		}
+		popup->add_submenu_node_item(label, sub);
+	}
+}
+
+void AIAssistantDock::_on_submenu_model_selected(int p_id) {
+	// Find the item in the submenus.
+	String meta;
+	for (int i = 0; i < provider_submenus.size(); i++) {
+		PopupMenu *sub = provider_submenus[i];
+		int index = sub->get_item_index(p_id);
+		if (index >= 0) {
+			meta = sub->get_item_metadata(index);
+			break;
+		}
+	}
+
+	if (meta.is_empty()) {
 		return;
 	}
 
-	Dictionary response = json.get_data();
-	if (!response.has("all") || !response.has("connected")) {
-		print_line("AIAssistant: Response missing 'all' or 'connected' key");
+	// meta is "provider_id/model_id".
+	int slash = meta.find("/");
+	if (slash < 0) {
 		return;
 	}
 
-	Array all_providers = response["all"];
-	Array connected_providers = response["connected"];
-	print_line("AIAssistant: Found " + itos(all_providers.size()) + " providers, " + itos(connected_providers.size()) + " connected");
+	String provider_id = meta.substr(0, slash);
+	String model_id = meta.substr(slash + 1);
 
-	// Print connected provider names
-	String connected_list;
-	for (int j = 0; j < connected_providers.size(); j++) {
-		if (j > 0) connected_list += ", ";
-		connected_list += String(connected_providers[j]);
+	// Check if provider is connected.
+	bool is_connected = false;
+	for (int i = 0; i < providers.size(); i++) {
+		if (providers[i].id == provider_id) {
+			is_connected = providers[i].connected;
+			break;
+		}
 	}
-	print_line("AIAssistant: Connected providers: " + connected_list);
 
-	// Clear existing items
-	model_selector->clear();
-	available_models.clear();
+	if (is_connected) {
+		// Select model immediately.
+		selected_provider_id = provider_id;
+		selected_model_id = model_id;
+		_populate_model_menu();
+		_update_model_button_text();
+		_update_model_config(provider_id + "/" + model_id);
 
-	// Get current model from config (via separate request)
-	// For now, we'll show all models from connected providers
-
-	int selected_index = 0;
-	int index = 0;
-
-	for (int i = 0; i < all_providers.size(); i++) {
-		Dictionary provider = all_providers[i];
-		String provider_id = provider.get("id", "");
-		String provider_name = provider.get("name", provider_id);
-
-		// Only show connected providers
-		bool is_connected = false;
-		for (int j = 0; j < connected_providers.size(); j++) {
-			if (String(connected_providers[j]) == provider_id) {
-				is_connected = true;
+		// Find model name for message.
+		for (int i = 0; i < providers.size(); i++) {
+			if (providers[i].id == provider_id) {
+				for (int j = 0; j < providers[i].models.size(); j++) {
+					if (providers[i].models[j].id == model_id) {
+						_add_system_message("Switched to model: " + providers[i].models[j].name);
+						break;
+					}
+				}
 				break;
 			}
 		}
-
-		// Debug: show why provider was skipped
-		if (provider_id == "anthropic") {
-			print_line("AIAssistant: Checking anthropic - is_connected=" + String(is_connected ? "true" : "false"));
-		}
-
-		if (!is_connected) {
-			continue;
-		}
-
-		print_line("AIAssistant: Processing connected provider: " + provider_id + " (" + provider_name + ")");
-
-		// Add models from this provider
-		if (provider.has("models")) {
-			Dictionary models_dict = provider["models"];
-			Array model_keys = models_dict.keys();
-
-			for (int k = 0; k < model_keys.size(); k++) {
-				String model_key = model_keys[k];
-				Dictionary model = models_dict[model_key];
-
-				String model_id = model.get("id", model_key);
-				String model_name = model.get("name", model_id);
-
-				// Full model identifier: "provider/model"
-				String full_model_id = provider_id + "/" + model_id;
-
-				// Filter to show only main models for a cleaner list
-				// Skip: thinking variants and models ending with full date (e.g., -20251101, -20250929)
-				// Keep: claude-opus-4-5, claude-sonnet-4-5, claude-3-5-sonnet, gpt-4o, etc.
-				bool is_thinking_variant = model_id.contains("-thinking");
-
-				// Check if model ID ends with a date pattern like -20251101 (8 digits after dash)
-				bool is_dated_version = false;
-				if (model_id.length() > 9) {
-					String suffix = model_id.substr(model_id.length() - 9, 9);
-					if (suffix.begins_with("-20") && suffix.substr(1).is_valid_int()) {
-						is_dated_version = true;
-					}
-				}
-				// Also check for @date format like @20251101
-				if (model_id.contains("@20")) {
-					is_dated_version = true;
-				}
-
-				// Skip thinking and dated versions unless they're the current selection
-				if ((is_thinking_variant || is_dated_version) && full_model_id != current_model_id) {
-					continue;
-				}
-
-				// Format: "Provider / Model Name"
-				String display_name = provider_name + " / " + model_name;
-
-				print_line("AIAssistant: Adding model: " + full_model_id + " (" + display_name + ")");
-				model_selector->add_item(display_name, index);
-
-				Dictionary model_info;
-				model_info["id"] = model_id;
-				model_info["provider"] = provider_id;
-				model_info["name"] = model_name;
-				available_models.push_back(model_info);
-
-				// Check if this is the current model (using full provider/model ID)
-				if (full_model_id == current_model_id) {
-					selected_index = index;
-				}
-
-				index++;
-			}
-		}
-	}
-
-	if (available_models.size() > 0) {
-		model_selector->set_disabled(false);
-		model_selector->select(selected_index);
-		_add_system_message("Loaded " + itos(available_models.size()) + " models from " + itos(connected_providers.size()) + " provider(s).");
 	} else {
-		model_selector->add_item("(no models available)", 0);
-		model_selector->set_disabled(true);
-		_add_system_message("No AI models available. Check provider authentication.");
+		// Store pending selection and trigger auth.
+		selected_provider_id = provider_id;
+		selected_model_id = model_id;
+		_update_model_button_text();
+		_start_auth_for_provider(provider_id);
 	}
 }
 
-void AIAssistantDock::_on_model_selected(int p_index) {
-	if (p_index < 0 || p_index >= available_models.size()) {
+void AIAssistantDock::_update_model_button_text() {
+	if (selected_model_id.is_empty()) {
+		model_button->set_text("Select Model");
 		return;
 	}
 
-	Dictionary model_info = available_models[p_index];
-	String model_id = model_info["id"];
-	String provider_id = model_info["provider"];
+	// Find model name.
+	String model_name = selected_model_id;
+	bool is_connected = false;
+	for (int i = 0; i < providers.size(); i++) {
+		if (providers[i].id == selected_provider_id) {
+			is_connected = providers[i].connected;
+			for (int j = 0; j < providers[i].models.size(); j++) {
+				if (providers[i].models[j].id == selected_model_id) {
+					model_name = providers[i].models[j].name;
+					break;
+				}
+			}
+			break;
+		}
+	}
 
-	// Full model identifier: "provider/model"
-	String full_model_id = provider_id + "/" + model_id;
-
-	if (full_model_id != current_model_id) {
-		current_model_id = full_model_id;
-		_update_model_config(full_model_id);
-		_add_system_message("Switched to model: " + String(model_info["name"]));
+	if (is_connected) {
+		model_button->set_text(model_name);
+	} else {
+		model_button->set_text(model_name + " (auth needed)");
 	}
 }
 
 void AIAssistantDock::_update_model_config(const String &p_model_id) {
-	// Update the OpenCode config to use the selected model
+	// Update the OpenCode config to use the selected model.
 	String url = service_url + "/config?directory=" + _get_project_directory().uri_encode();
 
 	Dictionary body;
@@ -2313,13 +2645,195 @@ void AIAssistantDock::_update_model_config(const String &p_model_id) {
 
 	String json_body = JSON::stringify(body);
 
-	// Use a one-off request for config update
 	HTTPRequest *config_request = memnew(HTTPRequest);
 	add_child(config_request);
 	config_request->request(url, _get_headers_with_directory(), HTTPClient::METHOD_PATCH, json_body);
-
-	// Clean up after completion
 	config_request->connect("request_completed", callable_mp((Node *)config_request, &Node::queue_free).unbind(4));
+}
+
+// === Auth Flow ===
+
+void AIAssistantDock::_start_auth_for_provider(const String &p_provider_id) {
+	if (auth_state != AUTH_IDLE) {
+		_add_system_message("Authentication already in progress.");
+		return;
+	}
+
+	pending_auth_provider_id = p_provider_id;
+
+	// Look up auth methods for this provider.
+	if (!auth_methods.has(p_provider_id)) {
+		_add_system_message("No authentication methods available for " + p_provider_id + ". Try reconnecting.");
+		return;
+	}
+
+	const Vector<Dictionary> &methods = auth_methods[p_provider_id];
+	if (methods.size() == 0) {
+		_add_system_message("No authentication methods available for " + p_provider_id);
+		return;
+	}
+
+	// Find first OAuth method.
+	pending_auth_method_index = 0;
+	for (int i = 0; i < methods.size(); i++) {
+		String type = methods[i].get("type", "");
+		if (type == "oauth") {
+			pending_auth_method_index = i;
+			break;
+		}
+	}
+
+	_add_system_message("Starting authentication for " + p_provider_id + "...");
+	_start_oauth_flow();
+}
+
+void AIAssistantDock::_start_oauth_flow() {
+	auth_state = AUTH_AUTHORIZING;
+
+	String url = service_url + "/provider/" + pending_auth_provider_id + "/oauth/authorize";
+
+	print_line("[AIAssistant] Starting OAuth: POST " + url);
+
+	Vector<String> headers = _get_headers_with_directory();
+	headers.push_back("Accept: application/json");
+	String body = "{\"method\": " + itos(pending_auth_method_index) + "}";
+	Error err = http_auth_request->request(url, headers, HTTPClient::METHOD_POST, body);
+	if (err != OK) {
+		_add_system_message("Failed to start authentication.");
+		auth_state = AUTH_IDLE;
+	}
+}
+
+void AIAssistantDock::_poll_oauth_callback() {
+	if (auth_state != AUTH_POLLING) {
+		auth_poll_timer->stop();
+		return;
+	}
+
+	poll_attempts++;
+	if (poll_attempts > 60) { // 3 minutes max.
+		auth_poll_timer->stop();
+		auth_state = AUTH_IDLE;
+		_add_system_message("Authentication timed out.");
+		return;
+	}
+
+	String url = service_url + "/provider/" + pending_auth_provider_id + "/oauth/callback";
+
+	Vector<String> headers = _get_headers_with_directory();
+	headers.push_back("Accept: application/json");
+	String body = "{\"method\": " + itos(pending_auth_method_index) + "}";
+	Error err = http_auth_request->request(url, headers, HTTPClient::METHOD_POST, body);
+	if (err != OK) {
+		print_line("[AIAssistant] Failed to send poll request");
+	}
+}
+
+void AIAssistantDock::_on_auth_code_submitted() {
+	String code = auth_code_input->get_text().strip_edges();
+	if (code.is_empty()) {
+		_add_system_message("No code entered. Authentication cancelled.");
+		auth_state = AUTH_IDLE;
+		return;
+	}
+
+	_add_system_message("Submitting authorization code...");
+
+	String url = service_url + "/provider/" + pending_auth_provider_id + "/oauth/callback";
+
+	print_line("[AIAssistant] Submitting OAuth code: POST " + url);
+
+	Vector<String> headers = _get_headers_with_directory();
+	headers.push_back("Accept: application/json");
+
+	String body = "{\"method\": " + itos(pending_auth_method_index) + ", \"code\": \"" + code.json_escape() + "\"}";
+	Error err = http_auth_request->request(url, headers, HTTPClient::METHOD_POST, body);
+	if (err != OK) {
+		_add_system_message("Failed to submit authorization code.");
+		auth_state = AUTH_IDLE;
+	}
+}
+
+void AIAssistantDock::_on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	String body_str;
+	if (p_body.size() > 0) {
+		body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+	}
+
+	print_line("[AIAssistant] Auth HTTP response (state=" + itos(auth_state) + "): code=" + itos(p_code));
+
+	switch (auth_state) {
+		case AUTH_AUTHORIZING: {
+			if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+				_add_system_message("Authentication request failed.");
+				auth_state = AUTH_IDLE;
+				return;
+			}
+
+			Variant result = JSON::parse_string(body_str);
+			if (result.get_type() == Variant::DICTIONARY) {
+				Dictionary resp = result;
+				String auth_url = resp.get("url", "");
+				pending_auth_method_type = resp.get("method", "");
+
+				if (!auth_url.is_empty()) {
+					_add_system_message("Opening browser for authentication...");
+					OS::get_singleton()->shell_open(auth_url);
+
+					if (pending_auth_method_type == "code") {
+						// Code-based flow: show dialog for user to paste the code.
+						auth_state = AUTH_POLLING;
+						auth_code_input->set_text("");
+						auth_code_dialog->popup_centered();
+						_add_system_message("After authorizing in the browser, paste the code in the dialog.");
+					} else {
+						// Redirect-based flow: poll for callback completion.
+						auth_state = AUTH_POLLING;
+						poll_attempts = 0;
+						auth_poll_timer->start();
+					}
+				} else {
+					_add_system_message("No authorization URL returned.");
+					auth_state = AUTH_IDLE;
+				}
+			} else {
+				_add_system_message("Invalid authorization response.");
+				auth_state = AUTH_IDLE;
+			}
+		} break;
+
+		case AUTH_POLLING: {
+			if (p_code == 200) {
+				// Success — auth is complete.
+				auth_poll_timer->stop();
+				auth_state = AUTH_IDLE;
+
+				// Mark provider as connected locally.
+				for (int i = 0; i < providers.size(); i++) {
+					if (providers[i].id == pending_auth_provider_id) {
+						providers.write[i].connected = true;
+						break;
+					}
+				}
+
+				_populate_model_menu();
+				_update_model_button_text();
+				_add_system_message("Authentication successful! " + pending_auth_provider_id + " is now connected.");
+
+				// Update config if a model was pending.
+				if (!selected_model_id.is_empty()) {
+					_update_model_config(selected_provider_id + "/" + selected_model_id);
+				}
+
+				// Re-fetch providers to get fresh state.
+				_fetch_providers();
+			}
+			// Non-200 during polling is normal (auth not yet complete), keep polling.
+		} break;
+
+		default:
+			break;
+	}
 }
 
 // === Question Handling (AI Asking User Questions) ===
@@ -2476,8 +2990,7 @@ void AIAssistantDock::_show_question_dialog(const Dictionary &p_question) {
 
 	// Scroll to bottom if auto-scroll is enabled
 	if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
-		callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(
-				chat_scroll->get_v_scroll_bar()->get_max());
+		callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(INT32_MAX);
 	}
 
 	_add_log_entry("QUESTION", "AI is asking: " + question_text.substr(0, 100) + (question_text.length() > 100 ? "..." : ""), Color(1.0, 0.8, 0.2));

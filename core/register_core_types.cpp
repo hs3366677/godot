@@ -43,7 +43,7 @@
 #include "core/input/input.h"
 #include "core/input/input_map.h"
 #include "core/input/shortcut.h"
-#include "core/io/ai_asset_metadata.h"
+// TODO: #include "core/io/ai_asset_metadata.h" — file not yet created
 #include "core/io/config_file.h"
 #include "core/io/dir_access.h"
 #include "core/io/dtls_server.h"
@@ -269,7 +269,7 @@ void register_core_types() {
 	GDREGISTER_CLASS(JSON);
 
 	GDREGISTER_CLASS(ConfigFile);
-	GDREGISTER_CLASS(AIAssetMetadata);
+	// TODO: GDREGISTER_CLASS(AIAssetMetadata); — class not yet created
 
 	GDREGISTER_CLASS(PCKPacker);
 
