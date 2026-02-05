@@ -147,6 +147,7 @@ private:
 	// Track tool UI elements by part ID for status updates
 	HashMap<String, RichTextLabel *> tool_containers;
 	HashMap<String, uint64_t> tool_start_times; // Track when each tool started
+	HashMap<String, String> tool_logged_status; // Track last-logged status per tool for log updates
 
 	// Logs tab
 	VBoxContainer *logs_tab = nullptr;

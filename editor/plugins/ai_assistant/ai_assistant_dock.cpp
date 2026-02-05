@@ -18,6 +18,7 @@
 #include "editor/debugger/editor_debugger_node.h"
 #include "editor/debugger/script_editor_debugger.h"
 #include "editor/editor_interface.h"
+#include "editor/file_system/editor_file_system.h"
 #include "editor/run/editor_run_bar.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/separator.h"
@@ -1245,14 +1246,33 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 				Variant todos_var = in["todos"];
 				if (todos_var.get_type() == Variant::ARRAY) {
 					Array todos = todos_var;
+					int completed_count = 0;
+					int in_progress_count = 0;
+					int pending_count = 0;
+					String active_task;
 					for (int ti = 0; ti < todos.size(); ti++) {
-						if (((Dictionary)todos[ti]).get("status", "") == String("in_progress")) {
-							input_info = ((Dictionary)todos[ti]).get("activeForm", ((Dictionary)todos[ti]).get("content", ""));
-							break;
+						Dictionary todo = todos[ti];
+						String todo_status = todo.get("status", "");
+						if (todo_status == "completed") {
+							completed_count++;
+						} else if (todo_status == "in_progress") {
+							in_progress_count++;
+							if (active_task.is_empty()) {
+								active_task = todo.get("activeForm", todo.get("content", ""));
+							}
+						} else {
+							pending_count++;
 						}
 					}
-					if (input_info.is_empty() && todos.size() > 0) {
-						input_info = itos(todos.size()) + " todos";
+					// Show active task and progress summary
+					if (!active_task.is_empty()) {
+						input_info = active_task;
+					}
+					String progress = itos(completed_count) + "/" + itos(todos.size()) + " done";
+					if (!input_info.is_empty()) {
+						input_info += " (" + progress + ")";
+					} else {
+						input_info = progress;
 					}
 				}
 			}
@@ -1298,22 +1318,29 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 				formatted += " [color=#aaaaaa]" + input_info + "[/color]";
 			}
 		} else if (status == "completed") {
-			// Show title for completed tools
+			// Show input info first (pattern, file path, command — most specific)
+			// Then append title if it adds extra context (e.g. result count)
 			String title;
 			if (details.has("title")) {
 				title = details["title"];
 			}
-			if (!title.is_empty()) {
-				if (title.length() > 80) {
-					title = title.substr(0, 80) + "...";
-				}
-				formatted += " [color=#aaaaaa]" + title + "[/color]";
-			} else if (!input_info.is_empty()) {
-				// Fallback to input info if no title
+			if (!input_info.is_empty()) {
 				if (input_info.length() > 80) {
 					input_info = input_info.substr(0, 80) + "...";
 				}
 				formatted += " [color=#aaaaaa]" + input_info + "[/color]";
+				// Append title only if different from input_info (adds extra info)
+				if (!title.is_empty() && title != input_info && !title.begins_with(input_info)) {
+					if (title.length() > 60) {
+						title = title.substr(0, 60) + "...";
+					}
+					formatted += " [color=#888888](" + title + ")[/color]";
+				}
+			} else if (!title.is_empty()) {
+				if (title.length() > 80) {
+					title = title.substr(0, 80) + "...";
+				}
+				formatted += " [color=#aaaaaa]" + title + "[/color]";
 			}
 		} else if (status == "error") {
 			// Show input info on first line
@@ -1374,6 +1401,7 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 void AIAssistantDock::_clear_tool_tracking() {
 	tool_containers.clear();
 	tool_start_times.clear();
+	tool_logged_status.clear();
 }
 
 void AIAssistantDock::_update_status(const String &p_text, const Color &p_color) {
@@ -1543,10 +1571,37 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 			// Always update tool message (will create if new, update if exists)
 			_add_tool_message(part_id, tool_name, status, state);
 
-			// Only log to Logs tab for new parts
-			if (i >= last_part_count) {
+			// Log to Logs tab when tool is new or status changed
+			String *prev_status = tool_logged_status.getptr(part_id);
+			if (!prev_status || *prev_status != status) {
+				// Rescan filesystem when file-modifying tools complete
+				if (status == "completed" && (!prev_status || *prev_status != "completed")) {
+					if (tool_name == "write" || tool_name == "edit" || tool_name == "bash" || tool_name == "create_file") {
+						EditorFileSystem::get_singleton()->scan_changes();
+					}
+				}
+				tool_logged_status[part_id] = status;
+
+				// Build input summary for the log
+				String input_summary;
+				Dictionary input = state.get("input", Dictionary());
+				if (input.has("file_path")) {
+					input_summary = String(input["file_path"]);
+				} else if (input.has("pattern")) {
+					input_summary = String(input["pattern"]);
+				} else if (input.has("command")) {
+					String cmd = String(input["command"]);
+					if (cmd.length() > 80) {
+						cmd = cmd.substr(0, 80) + "...";
+					}
+					input_summary = cmd;
+				}
+
 				String log_msg = "Tool: " + tool_name + " [" + status + "]";
-				if (state.has("output")) {
+				if (!input_summary.is_empty()) {
+					log_msg += " " + input_summary;
+				}
+				if (status == "completed" && state.has("output")) {
 					String output = state.get("output", "");
 					if (output.length() > 100) {
 						output = output.substr(0, 100) + "...";
@@ -1556,17 +1611,47 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 				_add_log_entry("TOOL", log_msg, Color(0.6, 0.7, 0.9));
 			}
 		} else if (type == "text") {
-			// Note: Text parts are updated incrementally during streaming (deltas appended)
-			// We only log a preview during streaming, but wait for completion to show in chat
-			// This avoids showing partial/incomplete text
-			String text = part.get("text", "");
-			if (!text.is_empty() && i >= last_part_count) {
-				// Log preview to Logs tab only (for visibility during streaming)
+			String part_id = part.get("id", "");
+			String text = String(part.get("text", "")).strip_edges();
+			if (text.is_empty()) {
+				continue;
+			}
+
+			String text_key = part_id + "_text_stream";
+			if (tool_containers.has(text_key)) {
+				// Update existing streaming text label
+				RichTextLabel *text_label = tool_containers[text_key];
+				if (text_label) {
+					String formatted = "[color=#66ff99][b]AI:[/b][/color] " + text;
+					text_label->set_text(formatted);
+				}
+			} else {
+				// Create a new streaming text label
+				VBoxContainer *msg_container = memnew(VBoxContainer);
+				RichTextLabel *text_label = memnew(RichTextLabel);
+				text_label->set_use_bbcode(true);
+				text_label->set_fit_content(true);
+				String formatted = "[color=#66ff99][b]AI:[/b][/color] " + text;
+				text_label->set_text(formatted);
+				text_label->set_selection_enabled(true);
+				text_label->set_context_menu_enabled(true);
+				text_label->set_focus_mode(Control::FOCUS_CLICK);
+				msg_container->add_child(text_label);
+				msg_container->add_child(memnew(HSeparator));
+				chat_container->add_child(msg_container);
+				tool_containers[text_key] = text_label;
+
+				// Log first appearance
 				String preview = text.substr(0, 150);
 				if (text.length() > 150) {
 					preview += "...";
 				}
 				_add_log_entry("LLM", preview, Color(0.5, 0.9, 0.5));
+			}
+
+			// Auto-scroll
+			if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
+				callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(INT32_MAX);
 			}
 		}
 	}
@@ -1580,13 +1665,22 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 			Dictionary part = parts[i];
 			String type = part.get("type", "");
 			if (type == "text") {
-				// Show the complete text now that the message is finished
+				// Final update to streaming text label with complete text
 				String part_id = part.get("id", "");
-				String text = part.get("text", "");
-				// Only show if not already shown
-				if (!text.is_empty() && !tool_containers.has(part_id + "_text_final")) {
-					tool_containers[part_id + "_text_final"] = nullptr; // Mark as shown
-					_add_ai_message(text);
+				String text = String(part.get("text", "")).strip_edges();
+				if (!text.is_empty()) {
+					String text_key = part_id + "_text_stream";
+					if (tool_containers.has(text_key)) {
+						// Update existing streaming label with final text
+						RichTextLabel *text_label = tool_containers[text_key];
+						if (text_label) {
+							String formatted = "[color=#66ff99][b]AI:[/b][/color] " + text;
+							text_label->set_text(formatted);
+						}
+					} else {
+						// Text was never streamed (edge case), add it now
+						_add_ai_message(text);
+					}
 				}
 			} else if (type == "tool") {
 				// Update tool with final state (should now be completed or error)
@@ -2291,7 +2385,7 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 		}
 	}
 
-	_add_system_message("[History] Chat history loaded.");
+	_add_log_entry("INFO", "Chat history loaded.", Color(0.7, 0.7, 0.7));
 }
 
 // === Provider/Model Fetching + Auth Flow ===
@@ -2459,7 +2553,7 @@ void AIAssistantDock::_on_provider_request_completed(int p_result, int p_code, c
 			for (int i = 0; i < providers.size(); i++) {
 				total_models += providers[i].models.size();
 			}
-			_add_system_message("Loaded " + itos(total_models) + " models from " + itos(providers.size()) + " provider(s).");
+			_add_log_entry("INFO", "Loaded " + itos(total_models) + " models from " + itos(providers.size()) + " provider(s).", Color(0.7, 0.7, 0.7));
 
 			// Chain: fetch auth methods next.
 			_fetch_auth_methods();
