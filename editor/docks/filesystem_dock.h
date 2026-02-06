@@ -40,6 +40,7 @@
 #include "scene/gui/control.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/item_list.h"
+#include "scene/gui/rich_text_label.h"
 #include "scene/gui/menu_button.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/tree.h"
@@ -136,6 +137,19 @@ private:
 		FILE_MENU_NEW_SCRIPT,
 		FILE_MENU_NEW_SCENE,
 		FILE_MENU_RUN_SCRIPT,
+		// AI Asset menu items (origin-aware)
+		FILE_MENU_AI_VIEW_METADATA,         // All assets - show full metadata popup
+		FILE_MENU_AI_GENERATE_PLACEHOLDER,  // Placeholder - generate real asset
+		FILE_MENU_AI_EDIT_PROMPT,           // Placeholder/Generated/Hybrid - open prompt editor
+		FILE_MENU_AI_COPY_PROMPT,           // Placeholder/Generated - copy prompt to clipboard
+		FILE_MENU_AI_QUICK_REGENERATE,      // Generated - regenerate with new seed
+		FILE_MENU_AI_REGENERATE_BUNDLE,     // Generated bundles - regenerate all linked assets
+		FILE_MENU_AI_VIEW_PROMPT,           // Generated - show prompt popup (read-only)
+		FILE_MENU_AI_CHANGE_MODEL,          // Generated - open model picker
+		FILE_MENU_AI_ENHANCE,               // Imported - open AI transform dialog
+		FILE_MENU_AI_GENERATE_VARIATIONS,   // Imported - generate variations
+		FILE_MENU_AI_VIEW_SOURCE,           // Hybrid - navigate to source asset
+		FILE_MENU_AI_RETRANSFORM,           // Hybrid - re-run transform
 		FILE_MENU_MAX,
 		// Extra shortcuts that don't exist in the menu.
 		EXTRA_FOCUS_PATH,
@@ -205,6 +219,12 @@ private:
 
 	ConfirmationDialog *conversion_dialog = nullptr;
 	ConfirmationDialog *move_confirm_dialog = nullptr;
+
+	// AI Asset dialogs
+	AcceptDialog *ai_metadata_dialog = nullptr;
+	RichTextLabel *ai_metadata_content = nullptr;
+	AcceptDialog *ai_prompt_dialog = nullptr;
+	RichTextLabel *ai_prompt_content = nullptr;
 
 	SceneCreateDialog *make_scene_dialog = nullptr;
 	ScriptCreateDialog *make_script_dialog = nullptr;

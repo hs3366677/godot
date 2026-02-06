@@ -33,8 +33,10 @@
 #include "core/config/project_settings.h"
 #include "core/extension/gdextension_manager.h"
 #include "core/input/input.h"
+#include "core/io/ai_asset_metadata.h"
 #include "core/io/config_file.h"
 #include "core/io/file_access.h"
+#include "core/io/json.h"
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
@@ -134,6 +136,7 @@
 #include "editor/import/resource_importer_texture.h"
 #include "editor/import/resource_importer_texture_atlas.h"
 #include "editor/import/resource_importer_wav.h"
+#include "editor/inspector/ai_asset_inspector_plugin.h"
 #include "editor/inspector/editor_inspector.h"
 #include "editor/inspector/editor_preview_plugins.h"
 #include "editor/inspector/editor_properties.h"
@@ -568,6 +571,81 @@ void EditorNode::_update_from_settings() {
 	NavigationServer3D::get_singleton()->set_debug_navigation_enable_edge_lines_xray(GLOBAL_GET("debug/shapes/navigation/3d/enable_edge_lines_xray"));
 	NavigationServer3D::get_singleton()->set_debug_navigation_enable_geometry_face_random_color(GLOBAL_GET("debug/shapes/navigation/3d/enable_geometry_face_random_color"));
 #endif // DEBUG_ENABLED
+}
+
+void EditorNode::_sync_ai_provider_settings() {
+	if (!EditorSettings::get_singleton()) {
+		return;
+	}
+
+	bool auto_sync = EDITOR_GET("ai/server/auto_sync_config");
+	if (!auto_sync) {
+		return;
+	}
+
+	// Build provider config from EditorSettings
+	Dictionary providers;
+
+	// Meshy
+	if (EDITOR_GET("ai/providers/meshy/enabled")) {
+		Dictionary meshy;
+		String api_key = EDITOR_GET("ai/providers/meshy/api_key");
+		if (!api_key.is_empty()) {
+			meshy["apiKey"] = api_key;
+		}
+		String api_url = EDITOR_GET("ai/providers/meshy/api_url");
+		if (!api_url.is_empty()) {
+			meshy["apiUrl"] = api_url;
+		}
+		meshy["defaultModel"] = EDITOR_GET("ai/providers/meshy/default_model");
+		providers["meshy"] = meshy;
+	}
+
+	// Doubao
+	if (EDITOR_GET("ai/providers/doubao/enabled")) {
+		Dictionary doubao;
+		String api_key = EDITOR_GET("ai/providers/doubao/api_key");
+		if (!api_key.is_empty()) {
+			doubao["apiKey"] = api_key;
+		}
+		String api_url = EDITOR_GET("ai/providers/doubao/api_url");
+		if (!api_url.is_empty()) {
+			doubao["apiUrl"] = api_url;
+		}
+		doubao["defaultModel"] = EDITOR_GET("ai/providers/doubao/default_model");
+		providers["doubao"] = doubao;
+	}
+
+	// Suno
+	if (EDITOR_GET("ai/providers/suno/enabled")) {
+		Dictionary suno;
+		String api_key = EDITOR_GET("ai/providers/suno/api_key");
+		if (!api_key.is_empty()) {
+			suno["apiKey"] = api_key;
+		}
+		String api_url = EDITOR_GET("ai/providers/suno/api_url");
+		if (!api_url.is_empty()) {
+			suno["apiUrl"] = api_url;
+		}
+		suno["defaultModel"] = EDITOR_GET("ai/providers/suno/default_model");
+		providers["suno"] = suno;
+	}
+
+	// Build full config
+	Dictionary config;
+	config["$schema"] = "https://opencode.ai/config.schema.json";
+
+	config["provider"] = providers;
+
+	// Write to project root as opencode.jsonc
+	String project_path = ProjectSettings::get_singleton()->get_resource_path();
+	String config_path = project_path.path_join("opencode.jsonc");
+
+	Ref<FileAccess> f = FileAccess::open(config_path, FileAccess::WRITE);
+	if (f.is_valid()) {
+		f->store_string(JSON::stringify(config, "  "));
+		f->flush();
+	}
 }
 
 void EditorNode::_gdextensions_reloaded() {
@@ -6902,7 +6980,19 @@ void EditorNode::_add_dropped_files_recursive(const Vector<String> &p_files, Str
 			continue;
 		}
 
-		dir->copy(from, to);
+		Error err = dir->copy(from, to);
+		if (err == OK) {
+			// Write AI asset import metadata for tracking origin
+			String res_path = ProjectSettings::get_singleton()->localize_path(to);
+			Ref<FileAccess> file_check = FileAccess::open(from, FileAccess::READ);
+			int64_t file_size = file_check.is_valid() ? file_check->get_length() : 0;
+
+			Dictionary import_meta = AIAssetMetadata::create_import_metadata(
+					from,
+					from.get_file(),
+					file_size);
+			AIAssetMetadata::set_metadata(res_path, import_meta);
+		}
 	}
 }
 
@@ -8245,6 +8335,10 @@ EditorNode::EditorNode() {
 
 	_update_vsync_mode();
 
+	// Sync AI provider settings to opencode.jsonc on startup.
+	EditorSettings::get_singleton()->connect("settings_changed", callable_mp(this, &EditorNode::_sync_ai_provider_settings));
+	_sync_ai_provider_settings();
+
 	// Warm up the project upgrade tool as early as possible.
 	project_upgrade_tool = memnew(ProjectUpgradeTool);
 	run_project_upgrade_tool = EditorSettings::get_singleton()->get_project_metadata(project_upgrade_tool->META_PROJECT_UPGRADE_TOOL, project_upgrade_tool->META_RUN_ON_RESTART, false);
@@ -8429,6 +8523,10 @@ EditorNode::EditorNode() {
 		Ref<EditorInspectorParticleProcessMaterialPlugin> ppm;
 		ppm.instantiate();
 		EditorInspector::add_inspector_plugin(ppm);
+
+		Ref<AIAssetInspectorPlugin> ai_asset_plugin;
+		ai_asset_plugin.instantiate();
+		EditorInspector::add_inspector_plugin(ai_asset_plugin);
 	}
 
 	editor_selection = memnew(EditorSelection);

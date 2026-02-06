@@ -31,7 +31,9 @@
 #include "filesystem_dock.h"
 
 #include "core/config/project_settings.h"
+#include "core/io/ai_asset_metadata.h"
 #include "core/io/dir_access.h"
+#include "core/io/json.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
 #include "core/os/keyboard.h"
@@ -2679,6 +2681,194 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 			}
 		} break;
 
+		// AI Asset menu handlers
+		case FILE_MENU_AI_VIEW_METADATA: {
+			if (p_selected.size() == 1) {
+				Dictionary ai_meta = AIAssetMetadata::get_metadata(p_selected[0]);
+				if (!ai_meta.is_empty()) {
+					AIAssetMetadata::Origin origin = AIAssetMetadata::string_to_origin(ai_meta.get(AIAssetMetadata::KEY_ORIGIN, "unknown"));
+					String origin_str = AIAssetMetadata::origin_to_string(origin);
+
+					String bbcode = vformat("[b]%s[/b]\n\n", p_selected[0]);
+					bbcode += vformat("[b]Origin:[/b] %s\n", origin_str.capitalize());
+
+					String prompt = ai_meta.get(AIAssetMetadata::KEY_PROMPT, "");
+					if (!prompt.is_empty()) {
+						bbcode += vformat("[b]Prompt:[/b] [i]%s[/i]\n", prompt);
+					}
+
+					String neg_prompt = ai_meta.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, "");
+					if (!neg_prompt.is_empty()) {
+						bbcode += vformat("[b]Negative Prompt:[/b] [i]%s[/i]\n", neg_prompt);
+					}
+
+					String provider = ai_meta.get(AIAssetMetadata::KEY_PROVIDER, "");
+					if (!provider.is_empty()) {
+						bbcode += vformat("[b]Provider:[/b] %s\n", provider);
+					}
+
+					String model = ai_meta.get(AIAssetMetadata::KEY_MODEL, "");
+					if (!model.is_empty()) {
+						bbcode += vformat("[b]Model:[/b] %s\n", model);
+					}
+
+					int version = ai_meta.get(AIAssetMetadata::KEY_VERSION, 0);
+					if (version > 0) {
+						bbcode += vformat("[b]Version:[/b] %d\n", version);
+					}
+
+					String source = ai_meta.get(AIAssetMetadata::KEY_SOURCE_ASSET, "");
+					if (!source.is_empty()) {
+						bbcode += vformat("[b]Source Asset:[/b] %s\n", source);
+					}
+
+					String imported_from = ai_meta.get(AIAssetMetadata::KEY_IMPORTED_FROM, "");
+					if (!imported_from.is_empty()) {
+						bbcode += vformat("[b]Imported From:[/b] %s\n", imported_from);
+					}
+
+					String created_at = ai_meta.get(AIAssetMetadata::KEY_CREATED_AT, "");
+					if (created_at.is_empty()) {
+						created_at = ai_meta.get(AIAssetMetadata::KEY_IMPORTED_AT, "");
+					}
+					if (created_at.is_empty()) {
+						created_at = ai_meta.get(AIAssetMetadata::KEY_GENERATED_AT, "");
+					}
+					if (!created_at.is_empty()) {
+						bbcode += vformat("[b]Date:[/b] %s\n", created_at);
+					}
+
+					String original_filename = ai_meta.get(AIAssetMetadata::KEY_ORIGINAL_FILENAME, "");
+					if (!original_filename.is_empty()) {
+						bbcode += vformat("[b]Original Filename:[/b] %s\n", original_filename);
+					}
+
+					int64_t size_bytes = ai_meta.get(AIAssetMetadata::KEY_ORIGINAL_SIZE_BYTES, 0);
+					if (size_bytes > 0) {
+						String size_str;
+						if (size_bytes < 1024) {
+							size_str = vformat("%d B", size_bytes);
+						} else if (size_bytes < 1024 * 1024) {
+							size_str = vformat("%.1f KB", size_bytes / 1024.0);
+						} else {
+							size_str = vformat("%.1f MB", size_bytes / (1024.0 * 1024.0));
+						}
+						bbcode += vformat("[b]Original Size:[/b] %s\n", size_str);
+					}
+
+					ai_metadata_content->set_text(bbcode);
+					ai_metadata_dialog->set_title(vformat(TTRC("AI Metadata - %s"), p_selected[0].get_file()));
+					ai_metadata_dialog->popup_centered();
+				}
+			}
+		} break;
+
+		case FILE_MENU_AI_GENERATE_PLACEHOLDER: {
+			if (p_selected.size() == 1) {
+				// TODO: Call OpenCode API to generate asset from placeholder metadata
+				print_line(vformat("TODO: Generate from placeholder: %s", p_selected[0]));
+			}
+		} break;
+
+		case FILE_MENU_AI_EDIT_PROMPT: {
+			if (p_selected.size() == 1) {
+				// TODO: Open prompt editor dialog
+				print_line(vformat("TODO: Open prompt editor for: %s", p_selected[0]));
+			}
+		} break;
+
+		case FILE_MENU_AI_COPY_PROMPT: {
+			if (p_selected.size() == 1) {
+				Dictionary ai_meta = AIAssetMetadata::get_metadata(p_selected[0]);
+				if (ai_meta.has(AIAssetMetadata::KEY_PROMPT)) {
+					String prompt = ai_meta[AIAssetMetadata::KEY_PROMPT];
+					DisplayServer::get_singleton()->clipboard_set(prompt);
+				}
+			}
+		} break;
+
+		case FILE_MENU_AI_QUICK_REGENERATE: {
+			if (p_selected.size() == 1) {
+				// TODO: Call OpenCode API to regenerate with new seed
+				print_line(vformat("TODO: Quick regenerate: %s", p_selected[0]));
+			}
+		} break;
+
+		case FILE_MENU_AI_REGENERATE_BUNDLE: {
+			if (p_selected.size() == 1) {
+				// TODO: Regenerate all assets in the bundle
+				print_line(vformat("TODO: Regenerate bundle for: %s", p_selected[0]));
+			}
+		} break;
+
+		case FILE_MENU_AI_VIEW_PROMPT: {
+			if (p_selected.size() == 1) {
+				Dictionary ai_meta = AIAssetMetadata::get_metadata(p_selected[0]);
+				if (ai_meta.has(AIAssetMetadata::KEY_PROMPT)) {
+					String prompt = ai_meta[AIAssetMetadata::KEY_PROMPT];
+					String bbcode = vformat("[b]%s[/b]\n\n", p_selected[0].get_file());
+					bbcode += vformat("[b]Prompt:[/b]\n[i]%s[/i]\n", prompt);
+
+					String neg_prompt = ai_meta.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, "");
+					if (!neg_prompt.is_empty()) {
+						bbcode += vformat("\n[b]Negative Prompt:[/b]\n[i]%s[/i]", neg_prompt);
+					}
+
+					ai_prompt_content->set_text(bbcode);
+					ai_prompt_dialog->set_title(vformat(TTRC("Prompt - %s"), p_selected[0].get_file()));
+					ai_prompt_dialog->popup_centered();
+				}
+			}
+		} break;
+
+		case FILE_MENU_AI_CHANGE_MODEL: {
+			if (p_selected.size() == 1) {
+				// TODO: Open model picker dialog
+				print_line(vformat("TODO: Open model picker for: %s", p_selected[0]));
+			}
+		} break;
+
+		case FILE_MENU_AI_ENHANCE: {
+			if (p_selected.size() == 1) {
+				Dictionary ai_meta = AIAssetMetadata::get_metadata(p_selected[0]);
+				String bbcode = vformat("[b]AI Enhance: %s[/b]\n\n", p_selected[0].get_file());
+				bbcode += TTRC("Available transforms:\n");
+				bbcode += "  [b]Upscale[/b] - Increase resolution\n";
+				bbcode += "  [b]Style Transfer[/b] - Apply art style\n";
+				bbcode += "  [b]Variation[/b] - Generate variations\n";
+				bbcode += "  [b]Image to 3D[/b] - Convert to 3D model\n";
+				bbcode += "\n[i]Use the AI Assistant to apply transforms.[/i]";
+
+				ai_metadata_content->set_text(bbcode);
+				ai_metadata_dialog->set_title(vformat(TTRC("AI Enhance - %s"), p_selected[0].get_file()));
+				ai_metadata_dialog->popup_centered();
+			}
+		} break;
+
+		case FILE_MENU_AI_GENERATE_VARIATIONS: {
+			if (p_selected.size() == 1) {
+				// TODO: Generate AI variations of the asset
+				print_line(vformat("TODO: Generate variations for: %s", p_selected[0]));
+			}
+		} break;
+
+		case FILE_MENU_AI_VIEW_SOURCE: {
+			if (p_selected.size() == 1) {
+				Dictionary ai_meta = AIAssetMetadata::get_metadata(p_selected[0]);
+				if (ai_meta.has(AIAssetMetadata::KEY_SOURCE_ASSET)) {
+					String source_path = ai_meta[AIAssetMetadata::KEY_SOURCE_ASSET];
+					navigate_to_path(source_path);
+				}
+			}
+		} break;
+
+		case FILE_MENU_AI_RETRANSFORM: {
+			if (p_selected.size() == 1) {
+				// TODO: Re-run the transform on the source asset
+				print_line(vformat("TODO: Re-transform: %s", p_selected[0]));
+			}
+		} break;
+
 		case EXTRA_FOCUS_PATH: {
 			focus_on_filter();
 		} break;
@@ -3623,6 +3813,51 @@ void FileSystemDock::_file_and_folders_fill_popup(PopupMenu *p_popup, const Vect
 
 		current_path = fpath;
 	}
+
+	// AI Asset menu items (origin-aware)
+	if (all_files && filenames.size() == 1) {
+		const String &asset_path = filenames[0];
+		AIAssetMetadata::Origin origin = AIAssetMetadata::get_origin(asset_path);
+
+		// Always show "View AI Metadata" for assets with metadata
+		if (origin != AIAssetMetadata::ORIGIN_UNKNOWN) {
+			p_popup->add_separator();
+			p_popup->add_icon_item(get_editor_theme_icon(SNAME("Info")), TTRC("View AI Metadata..."), FILE_MENU_AI_VIEW_METADATA);
+
+			// Origin-specific menu items
+			switch (origin) {
+				case AIAssetMetadata::ORIGIN_PLACEHOLDER: {
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Play")), TTRC("Generate from Placeholder"), FILE_MENU_AI_GENERATE_PLACEHOLDER);
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Edit")), TTRC("Edit Prompt & Generate..."), FILE_MENU_AI_EDIT_PROMPT);
+					p_popup->add_item(TTRC("Copy Prompt"), FILE_MENU_AI_COPY_PROMPT);
+				} break;
+				case AIAssetMetadata::ORIGIN_IMPORTED: {
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Shader")), TTRC("AI Enhance..."), FILE_MENU_AI_ENHANCE);
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Duplicate")), TTRC("Generate Variations..."), FILE_MENU_AI_GENERATE_VARIATIONS);
+				} break;
+				case AIAssetMetadata::ORIGIN_GENERATED: {
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Edit")), TTRC("Edit Prompt & Regenerate..."), FILE_MENU_AI_EDIT_PROMPT);
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Reload")), TTRC("Quick Regenerate"), FILE_MENU_AI_QUICK_REGENERATE);
+					p_popup->add_item(TTRC("View Prompt"), FILE_MENU_AI_VIEW_PROMPT);
+					p_popup->add_item(TTRC("Copy Prompt"), FILE_MENU_AI_COPY_PROMPT);
+					p_popup->add_item(TTRC("Change Model..."), FILE_MENU_AI_CHANGE_MODEL);
+					// Check if part of a bundle
+					Vector<String> bundle_members = AIAssetMetadata::get_bundle_members(asset_path);
+					if (!bundle_members.is_empty()) {
+						p_popup->add_icon_item(get_editor_theme_icon(SNAME("ReloadSmall")), TTRC("Regenerate Bundle"), FILE_MENU_AI_REGENERATE_BUNDLE);
+					}
+				} break;
+				case AIAssetMetadata::ORIGIN_HYBRID: {
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Edit")), TTRC("Edit Prompt & Re-transform..."), FILE_MENU_AI_EDIT_PROMPT);
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("ArrowLeft")), TTRC("View Source Asset"), FILE_MENU_AI_VIEW_SOURCE);
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Reload")), TTRC("Re-transform"), FILE_MENU_AI_RETRANSFORM);
+				} break;
+				default:
+					break;
+			}
+		}
+	}
+
 	EditorContextMenuPluginManager::get_singleton()->add_options_from_plugins(p_popup, EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM, p_paths);
 }
 
@@ -4527,6 +4762,30 @@ FileSystemDock::FileSystemDock() {
 	add_child(new_resource_dialog);
 	new_resource_dialog->set_base_type("Resource");
 	new_resource_dialog->connect("create", callable_mp(this, &FileSystemDock::_resource_created));
+
+	// AI Asset metadata dialog
+	ai_metadata_dialog = memnew(AcceptDialog);
+	ai_metadata_dialog->set_title(TTRC("AI Asset Metadata"));
+	ai_metadata_dialog->set_min_size(Size2(450, 350) * EDSCALE);
+	add_child(ai_metadata_dialog);
+
+	ai_metadata_content = memnew(RichTextLabel);
+	ai_metadata_content->set_use_bbcode(true);
+	ai_metadata_content->set_selection_enabled(true);
+	ai_metadata_content->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	ai_metadata_dialog->add_child(ai_metadata_content);
+
+	// AI prompt view dialog
+	ai_prompt_dialog = memnew(AcceptDialog);
+	ai_prompt_dialog->set_title(TTRC("AI Generation Prompt"));
+	ai_prompt_dialog->set_min_size(Size2(400, 200) * EDSCALE);
+	add_child(ai_prompt_dialog);
+
+	ai_prompt_content = memnew(RichTextLabel);
+	ai_prompt_content->set_use_bbcode(true);
+	ai_prompt_content->set_selection_enabled(true);
+	ai_prompt_content->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	ai_prompt_dialog->add_child(ai_prompt_content);
 
 	conversion_dialog = memnew(ConfirmationDialog);
 	add_child(conversion_dialog);
