@@ -149,6 +149,17 @@ private:
 	HashMap<String, uint64_t> tool_start_times; // Track when each tool started
 	HashMap<String, String> tool_logged_status; // Track last-logged status per tool for log updates
 
+	// Store full input/output for click-to-view in tool detail popup
+	HashMap<String, String> tool_full_inputs;  // part_id → full input text
+	HashMap<String, String> tool_full_outputs; // part_id → full output text
+
+	// Separate HashMap for text streaming labels (decoupled from tool_containers)
+	HashMap<String, RichTextLabel *> text_stream_labels;
+
+	// Tool detail viewer popup
+	AcceptDialog *tool_detail_dialog = nullptr;
+	RichTextLabel *tool_detail_content = nullptr;
+
 	// Logs tab
 	VBoxContainer *logs_tab = nullptr;
 	HBoxContainer *logs_toolbar = nullptr;
@@ -259,6 +270,8 @@ private:
 	void _add_system_message(const String &p_text);
 	void _add_tool_message(const String &p_part_id, const String &p_tool_name, const String &p_status, const Dictionary &p_details);
 	void _clear_tool_tracking();
+	String _format_tool_display_name(const String &p_tool_name) const;
+	void _on_tool_meta_clicked(const Variant &p_meta);
 
 	// Command processing
 	void _process_prompt(const String &p_prompt);

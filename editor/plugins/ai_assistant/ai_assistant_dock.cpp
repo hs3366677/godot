@@ -298,6 +298,18 @@ void AIAssistantDock::_setup_ui() {
 	auth_code_dialog->add_child(dialog_vbox);
 	add_child(auth_code_dialog);
 
+	// Tool detail viewer popup (shows full input/output on click)
+	tool_detail_dialog = memnew(AcceptDialog);
+	tool_detail_dialog->set_title("Tool Details");
+	tool_detail_dialog->set_min_size(Size2(600, 400));
+	tool_detail_content = memnew(RichTextLabel);
+	tool_detail_content->set_use_bbcode(true);
+	tool_detail_content->set_selection_enabled(true);
+	tool_detail_content->set_context_menu_enabled(true);
+	tool_detail_content->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	tool_detail_dialog->add_child(tool_detail_content);
+	add_child(tool_detail_dialog);
+
 	// Initial status
 	_update_status("Disconnected", Color(0.5, 0.5, 0.5));
 	_update_connection_indicator();
@@ -1095,279 +1107,294 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 	uint64_t elapsed_ms = Time::get_singleton()->get_ticks_msec() - tool_start_times[p_part_id];
 	float elapsed_sec = elapsed_ms / 1000.0f;
 
-	// Helper lambda to format tool details
-	auto format_tool_details = [](const String &tool_name, const String &status, const Dictionary &details, float elapsed) -> String {
-		// Determine status color
-		String status_color;
-		if (status == "completed") {
-			status_color = "66ff66"; // Green
-		} else if (status == "running" || status == "pending") {
-			status_color = "ffff66"; // Yellow
-		} else if (status == "error") {
-			status_color = "ff6666"; // Red
-		} else {
-			status_color = "888888"; // Gray
+	// --- Extract input dictionary ---
+	Dictionary in;
+	if (p_details.has("input")) {
+		Variant input_var = p_details["input"];
+		if (input_var.get_type() == Variant::DICTIONARY) {
+			in = input_var;
 		}
-
-		// Build tool message: "Tool: tool_name [status] (Xs)"
-		String time_str = vformat("%.1fs", elapsed);
-		String formatted = "[color=#9999ff][b]Tool:[/b][/color] " + tool_name + " [color=#" + status_color + "][" + status + "][/color] [color=#888888](" + time_str + ")[/color]";
-
-		// Special handling for task tool (subagent)
-		if (tool_name == "task") {
-			String agent_type;
-			String description;
-			if (details.has("input")) {
-				Dictionary input = details["input"];
-				agent_type = input.get("subagent_type", "");
-				description = input.get("description", "");
-			}
-			// For task tool, show agent type and description
-			if (!agent_type.is_empty()) {
-				formatted += " [color=#ff99ff]@" + agent_type + "[/color]";
-			}
-			if (!description.is_empty()) {
-				formatted += " [color=#aaaaaa]" + description + "[/color]";
-			}
-			// Show detailed subagent tools if available (from metadata)
-			if (details.has("metadata")) {
-				Dictionary metadata = details["metadata"];
-				if (metadata.has("summary")) {
-					Array summary = metadata["summary"];
-					if (summary.size() > 0) {
-						// Show each subagent tool with details
-						for (int i = 0; i < summary.size(); i++) {
-							Dictionary tool_info = summary[i];
-							String sub_tool = tool_info.get("tool", "?");
-							Dictionary sub_state = tool_info.get("state", Dictionary());
-							String sub_status = sub_state.get("status", "?");
-							String sub_title = sub_state.get("title", "");
-
-							// Determine status color for subagent tool
-							String sub_status_color;
-							if (sub_status == "completed") {
-								sub_status_color = "66ff66";
-							} else if (sub_status == "running" || sub_status == "pending") {
-								sub_status_color = "ffff66";
-							} else if (sub_status == "error") {
-								sub_status_color = "ff6666";
-							} else {
-								sub_status_color = "888888";
-							}
-
-							// Format: "  > tool_name [status] title" (using ASCII for compatibility)
-							formatted += "\n[color=#888888]  >[/color] [color=#9999cc]" + sub_tool + "[/color]";
-							formatted += " [color=#" + sub_status_color + "][" + sub_status + "][/color]";
-							if (!sub_title.is_empty()) {
-								// Truncate long titles
-								if (sub_title.length() > 60) {
-									sub_title = sub_title.substr(0, 60) + "...";
-								}
-								formatted += " [color=#aaaaaa]" + sub_title + "[/color]";
-							}
-						}
-					}
-				}
-			}
-			return formatted;
-		}
-
-		// Extract brief info from input for display.
-		// OpenCode tool input keys use camelCase.
-		// The "input" dict may be empty during "pending" state;
-		// fall back to parsing the "raw" JSON string if available.
-		String input_info;
-		Dictionary in;
-		if (details.has("input")) {
-			Variant input_var = details["input"];
-			if (input_var.get_type() == Variant::DICTIONARY) {
-				in = input_var;
-			}
-		}
-		// If input dict is empty, try parsing "raw" field (JSON string of the input)
-		if (in.is_empty() && details.has("raw")) {
-			Variant raw_var = details["raw"];
-			if (raw_var.get_type() == Variant::STRING) {
-				String raw_str = raw_var;
-				if (!raw_str.is_empty()) {
-					Variant parsed = JSON::parse_string(raw_str);
-					if (parsed.get_type() == Variant::DICTIONARY) {
-						in = parsed;
-					}
+	}
+	if (in.is_empty() && p_details.has("raw")) {
+		Variant raw_var = p_details["raw"];
+		if (raw_var.get_type() == Variant::STRING) {
+			String raw_str = raw_var;
+			if (!raw_str.is_empty()) {
+				Variant parsed = JSON::parse_string(raw_str);
+				if (parsed.get_type() == Variant::DICTIONARY) {
+					in = parsed;
 				}
 			}
 		}
-		if (!in.is_empty()) {
-			// --- File tools: read, write, edit, multiedit ---
-			if (in.has("filePath")) {
-				input_info = in["filePath"];
+	}
+
+	// --- Build input description for header line ---
+	String input_info;
+	String full_input; // Full input text for click-to-view
+
+	if (p_tool_name == "task") {
+		// Task tool: show @agent_type + description
+		String agent_type = in.get("subagent_type", "");
+		String description = in.get("description", "");
+		if (!agent_type.is_empty()) {
+			input_info = "@" + agent_type;
+		}
+		if (!description.is_empty()) {
+			if (!input_info.is_empty()) {
+				input_info += "  " + description;
+			} else {
+				input_info = description;
 			}
-			// --- bash ---
-			else if (in.has("command")) {
-				// Prefer description (human-readable) over raw command
-				if (in.has("description")) {
-					input_info = in["description"];
+		}
+		full_input = in.get("prompt", description);
+	} else if (in.has("filePath")) {
+		// File tools: read, write, edit, multiedit, create_file
+		String file_path = in["filePath"];
+		input_info = file_path;
+		// For read: append line range if offset/limit provided
+		if (p_tool_name == "read" || p_tool_name == "Read") {
+			int offset = in.get("offset", 0);
+			int limit = in.get("limit", 0);
+			if (offset > 0 || limit > 0) {
+				if (limit > 0) {
+					input_info += " (lines " + itos(offset) + "-" + itos(offset + limit) + ")";
 				} else {
-					input_info = in["command"];
-				}
-			}
-			// --- glob, grep ---
-			else if (in.has("pattern")) {
-				input_info = in["pattern"];
-				if (in.has("path")) {
-					input_info += " in " + String(in["path"]);
-				}
-			}
-			// --- websearch, codesearch ---
-			else if (in.has("query")) {
-				input_info = in["query"];
-			}
-			// --- webfetch ---
-			else if (in.has("url")) {
-				input_info = in["url"];
-			}
-			// --- lsp ---
-			else if (in.has("operation")) {
-				input_info = in["operation"];
-				if (in.has("filePath")) {
-					input_info += " " + String(in["filePath"]);
-				}
-			}
-			// --- skill ---
-			else if (in.has("name")) {
-				input_info = in["name"];
-			}
-			// --- list ---
-			else if (in.has("path")) {
-				input_info = in["path"];
-			}
-			// --- todowrite ---
-			else if (in.has("todos")) {
-				Variant todos_var = in["todos"];
-				if (todos_var.get_type() == Variant::ARRAY) {
-					Array todos = todos_var;
-					int completed_count = 0;
-					int in_progress_count = 0;
-					int pending_count = 0;
-					String active_task;
-					for (int ti = 0; ti < todos.size(); ti++) {
-						Dictionary todo = todos[ti];
-						String todo_status = todo.get("status", "");
-						if (todo_status == "completed") {
-							completed_count++;
-						} else if (todo_status == "in_progress") {
-							in_progress_count++;
-							if (active_task.is_empty()) {
-								active_task = todo.get("activeForm", todo.get("content", ""));
-							}
-						} else {
-							pending_count++;
-						}
-					}
-					// Show active task and progress summary
-					if (!active_task.is_empty()) {
-						input_info = active_task;
-					}
-					String progress = itos(completed_count) + "/" + itos(todos.size()) + " done";
-					if (!input_info.is_empty()) {
-						input_info += " (" + progress + ")";
-					} else {
-						input_info = progress;
-					}
-				}
-			}
-			// --- batch ---
-			else if (in.has("tool_calls")) {
-				Variant tc = in["tool_calls"];
-				if (tc.get_type() == Variant::ARRAY) {
-					input_info = itos(((Array)tc).size()) + " tool calls";
-				}
-			}
-			// --- apply_patch ---
-			else if (in.has("patchText")) {
-				String patch = in["patchText"];
-				int nl = patch.find("\n");
-				input_info = (nl >= 0) ? patch.substr(0, nl) : patch;
-			}
-			// --- Fallback: first string or array value ---
-			else {
-				Array keys = in.keys();
-				for (int i = 0; i < keys.size(); i++) {
-					Variant val = in[keys[i]];
-					if (val.get_type() == Variant::STRING && !String(val).is_empty()) {
-						input_info = val;
-						break;
-					} else if (val.get_type() == Variant::ARRAY) {
-						input_info = itos(((Array)val).size()) + " items";
-						break;
-					}
+					input_info += " (from line " + itos(offset) + ")";
 				}
 			}
 		}
-
-		// For pending: show "preparing..." if no input yet (input comes later with running state)
-		// For running: show input info
-		// For completed: show title (more human-readable)
-		// For error: show input info + full error on new line
-		if (status == "running") {
-			// Running tools should have input
-			if (!input_info.is_empty()) {
-				if (input_info.length() > 80) {
-					input_info = input_info.substr(0, 80) + "...";
-				}
-				formatted += " [color=#aaaaaa]" + input_info + "[/color]";
-			}
-		} else if (status == "completed") {
-			// Show input info first (pattern, file path, command — most specific)
-			// Then append title if it adds extra context (e.g. result count)
-			String title;
-			if (details.has("title")) {
-				title = details["title"];
-			}
-			if (!input_info.is_empty()) {
-				if (input_info.length() > 80) {
-					input_info = input_info.substr(0, 80) + "...";
-				}
-				formatted += " [color=#aaaaaa]" + input_info + "[/color]";
-				// Append title only if different from input_info (adds extra info)
-				if (!title.is_empty() && title != input_info && !title.begins_with(input_info)) {
-					if (title.length() > 60) {
-						title = title.substr(0, 60) + "...";
+		full_input = file_path;
+		if (in.has("content")) {
+			full_input += "\n" + String(in["content"]);
+		}
+		if (in.has("old_string")) {
+			full_input += "\nold_string: " + String(in["old_string"]) + "\nnew_string: " + String(in["new_string"]);
+		}
+	} else if (in.has("command")) {
+		// Bash: prefer description, full input is the command
+		if (in.has("description")) {
+			input_info = in["description"];
+		} else {
+			input_info = in["command"];
+		}
+		full_input = in["command"];
+	} else if (in.has("pattern")) {
+		// Grep, Glob: show "pattern" (in path)
+		String pattern = in["pattern"];
+		input_info = "\"" + pattern + "\"";
+		if (in.has("path")) {
+			input_info += " (in " + String(in["path"]) + ")";
+		}
+		full_input = pattern;
+	} else if (in.has("query")) {
+		input_info = in["query"];
+		full_input = input_info;
+	} else if (in.has("url")) {
+		input_info = in["url"];
+		full_input = input_info;
+	} else if (in.has("operation")) {
+		input_info = in["operation"];
+		if (in.has("filePath")) {
+			input_info += " " + String(in["filePath"]);
+		}
+		full_input = input_info;
+	} else if (in.has("name")) {
+		// Skill
+		input_info = in["name"];
+		full_input = input_info;
+	} else if (in.has("path")) {
+		input_info = in["path"];
+		full_input = input_info;
+	} else if (in.has("todos")) {
+		Variant todos_var = in["todos"];
+		if (todos_var.get_type() == Variant::ARRAY) {
+			Array todos = todos_var;
+			int completed_count = 0;
+			String active_task;
+			String todo_detail;
+			for (int ti = 0; ti < todos.size(); ti++) {
+				Dictionary todo = todos[ti];
+				String todo_status = todo.get("status", "");
+				String todo_content = todo.get("content", "");
+				if (todo_status == "completed") {
+					completed_count++;
+					todo_detail += "[x] " + todo_content + "\n";
+				} else if (todo_status == "in_progress") {
+					if (active_task.is_empty()) {
+						active_task = todo.get("activeForm", todo_content);
 					}
-					formatted += " [color=#888888](" + title + ")[/color]";
+					todo_detail += "[>] " + todo_content + "\n";
+				} else {
+					todo_detail += "[ ] " + todo_content + "\n";
 				}
-			} else if (!title.is_empty()) {
-				if (title.length() > 80) {
-					title = title.substr(0, 80) + "...";
-				}
-				formatted += " [color=#aaaaaa]" + title + "[/color]";
 			}
-		} else if (status == "error") {
-			// Show input info on first line
+			if (!active_task.is_empty()) {
+				input_info = active_task;
+			}
+			String progress = itos(completed_count) + "/" + itos(todos.size()) + " done";
 			if (!input_info.is_empty()) {
-				if (input_info.length() > 80) {
-					input_info = input_info.substr(0, 80) + "...";
-				}
-				formatted += " [color=#aaaaaa]" + input_info + "[/color]";
+				input_info += " (" + progress + ")";
+			} else {
+				input_info = progress;
 			}
-			// Show full error on new line
-			if (details.has("error")) {
-				String error = details["error"];
-				if (!error.is_empty()) {
-					formatted += "\n[color=#ff6666]Error: " + error + "[/color]";
+			full_input = todo_detail;
+		}
+	} else if (in.has("tool_calls")) {
+		Variant tc = in["tool_calls"];
+		if (tc.get_type() == Variant::ARRAY) {
+			input_info = itos(((Array)tc).size()) + " tool calls";
+		}
+		full_input = input_info;
+	} else if (in.has("patchText")) {
+		String patch = in["patchText"];
+		int nl = patch.find("\n");
+		input_info = (nl >= 0) ? patch.substr(0, nl) : patch;
+		full_input = patch;
+	} else {
+		// Fallback: first string or array value
+		Array keys = in.keys();
+		for (int i = 0; i < keys.size(); i++) {
+			Variant val = in[keys[i]];
+			if (val.get_type() == Variant::STRING && !String(val).is_empty()) {
+				input_info = val;
+				full_input = input_info;
+				break;
+			} else if (val.get_type() == Variant::ARRAY) {
+				input_info = itos(((Array)val).size()) + " items";
+				full_input = input_info;
+				break;
+			}
+		}
+	}
+
+	// Store full input for click-to-view
+	if (!full_input.is_empty()) {
+		tool_full_inputs[p_part_id] = full_input;
+	}
+
+	// --- Build status indicator ---
+	String status_icon;
+	String status_color;
+	String time_str = vformat("%.1fs", elapsed_sec);
+
+	if (p_status == "completed") {
+		status_icon = String::utf8("\u2713"); // checkmark
+		status_color = "66ff66";
+	} else if (p_status == "running" || p_status == "pending") {
+		status_icon = "...";
+		status_color = "ffff66";
+	} else if (p_status == "error") {
+		status_icon = String::utf8("\u2717"); // X mark
+		status_color = "ff6666";
+	} else {
+		status_icon = "...";
+		status_color = "888888";
+	}
+
+	// --- Build formatted BBCode ---
+	String display_name = _format_tool_display_name(p_tool_name);
+	String formatted = "[color=#9999ff][b]" + display_name + "[/b][/color]";
+
+	// Description
+	if (!input_info.is_empty()) {
+		String desc = input_info;
+		if (desc.length() > 120) {
+			desc = desc.substr(0, 120) + "...";
+		}
+		formatted += "  [color=#aaaaaa]" + desc + "[/color]";
+	}
+
+	// Status + time
+	formatted += "  [color=#" + status_color + "]" + status_icon + "[/color] [color=#888888](" + time_str + ")[/color]";
+
+	// --- Task tool: subagent tools (same 2-line format, indented with │) ---
+	if (p_tool_name == "task" && p_details.has("metadata")) {
+		Dictionary metadata = p_details["metadata"];
+		if (metadata.has("summary")) {
+			Array summary = metadata["summary"];
+			for (int i = 0; i < summary.size(); i++) {
+				Dictionary tool_info = summary[i];
+				String sub_tool = tool_info.get("tool", "?");
+				Dictionary sub_state = tool_info.get("state", Dictionary());
+				String sub_status = sub_state.get("status", "?");
+				String sub_title = sub_state.get("title", "");
+				Dictionary sub_input = sub_state.get("input", Dictionary());
+				String sub_output = sub_state.get("output", "");
+
+				// Sub-tool status icon
+				String sub_icon;
+				String sub_color;
+				if (sub_status == "completed") {
+					sub_icon = String::utf8("\u2713");
+					sub_color = "66ff66";
+				} else if (sub_status == "running" || sub_status == "pending") {
+					sub_icon = "...";
+					sub_color = "ffff66";
+				} else if (sub_status == "error") {
+					sub_icon = String::utf8("\u2717");
+					sub_color = "ff6666";
+				} else {
+					sub_icon = "...";
+					sub_color = "888888";
+				}
+
+				// Sub-tool description
+				String sub_desc = sub_title;
+				if (sub_desc.length() > 80) {
+					sub_desc = sub_desc.substr(0, 80) + "...";
+				}
+
+				// Line 1: │ ToolName  description  ✓
+				String sub_display = _format_tool_display_name(sub_tool);
+				formatted += "\n[color=#555555]" + String::utf8("\u2502") + "[/color] [color=#9999cc][b]" + sub_display + "[/b][/color]";
+				if (!sub_desc.is_empty()) {
+					formatted += "  [color=#888888]" + sub_desc + "[/color]";
+				}
+				formatted += "  [color=#" + sub_color + "]" + sub_icon + "[/color]";
+
+				// Line 2: │ N lines of output (clickable)
+				if (!sub_output.is_empty()) {
+					String sub_key = p_part_id + "_sub_" + itos(i);
+					tool_full_outputs[sub_key] = sub_output;
+					int line_count = sub_output.split("\n").size();
+					String out_summary = itos(line_count) + (line_count == 1 ? " line of output" : " lines of output");
+					formatted += "\n[color=#555555]" + String::utf8("\u2502") + "[/color] [url=tool://" + sub_key + "/output][color=#6699cc]" + out_summary + "[/color][/url]";
 				}
 			}
 		}
+	}
 
-		return formatted;
-	};
+	// --- Output summary line (clickable link) ---
+	if (p_status == "completed" && p_details.has("output")) {
+		String output = p_details["output"];
+		if (!output.is_empty()) {
+			tool_full_outputs[p_part_id] = output;
+			int line_count = output.split("\n").size();
+			String out_summary = itos(line_count) + (line_count == 1 ? " line of output" : " lines of output");
+			formatted += "\n[url=tool://" + p_part_id + "/output][color=#6699cc]" + out_summary + "[/color][/url]";
+		}
+	} else if (p_status == "error") {
+		String error_text;
+		if (p_details.has("error")) {
+			error_text = p_details["error"];
+		}
+		if (!error_text.is_empty()) {
+			tool_full_outputs[p_part_id] = error_text;
+			// Show first line of error as clickable link
+			int nl = error_text.find("\n");
+			String error_preview = (nl >= 0) ? error_text.substr(0, nl) : error_text;
+			if (error_preview.length() > 80) {
+				error_preview = error_preview.substr(0, 80) + "...";
+			}
+			formatted += "\n[url=tool://" + p_part_id + "/output][color=#ff6666]Error: " + error_preview + "[/color][/url]";
+		}
+	}
 
-	// Check if we already have a UI element for this tool part
+	// --- Update existing or create new UI element ---
 	if (tool_containers.has(p_part_id)) {
-		// Update existing tool's status, time, and output
 		RichTextLabel *tool_label = tool_containers[p_part_id];
 		if (tool_label) {
-			tool_label->set_text(format_tool_details(p_tool_name, p_status, p_details, elapsed_sec));
+			tool_label->set_text(formatted);
 		}
 		return;
 	}
@@ -1375,21 +1402,19 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 	// Create a new tool message container
 	VBoxContainer *container = memnew(VBoxContainer);
 
-	// Create the tool message label (same style as regular messages)
 	RichTextLabel *tool_label = memnew(RichTextLabel);
 	tool_label->set_use_bbcode(true);
 	tool_label->set_fit_content(true);
-	tool_label->set_text(format_tool_details(p_tool_name, p_status, p_details, elapsed_sec));
+	tool_label->set_text(formatted);
 	tool_label->set_selection_enabled(true);
 	tool_label->set_context_menu_enabled(true);
 	tool_label->set_focus_mode(Control::FOCUS_CLICK);
+	tool_label->connect("meta_clicked", callable_mp(this, &AIAssistantDock::_on_tool_meta_clicked));
 	container->add_child(tool_label);
 
 	container->add_child(memnew(HSeparator));
 
-	// Store reference for later updates (store the RichTextLabel directly)
 	tool_containers[p_part_id] = tool_label;
-
 	chat_container->add_child(container);
 
 	// Scroll to bottom if auto-scroll is enabled
@@ -1402,6 +1427,56 @@ void AIAssistantDock::_clear_tool_tracking() {
 	tool_containers.clear();
 	tool_start_times.clear();
 	tool_logged_status.clear();
+	text_stream_labels.clear();
+	tool_full_inputs.clear();
+	tool_full_outputs.clear();
+}
+
+String AIAssistantDock::_format_tool_display_name(const String &p_tool_name) const {
+	if (p_tool_name == "bash") return "Bash";
+	if (p_tool_name == "read") return "Read";
+	if (p_tool_name == "write") return "Write";
+	if (p_tool_name == "edit") return "Edit";
+	if (p_tool_name == "multiedit") return "MultiEdit";
+	if (p_tool_name == "glob") return "Glob";
+	if (p_tool_name == "grep") return "Grep";
+	if (p_tool_name == "task") return "Task";
+	if (p_tool_name == "todowrite") return "TodoWrite";
+	if (p_tool_name == "websearch") return "WebSearch";
+	if (p_tool_name == "webfetch") return "WebFetch";
+	if (p_tool_name == "apply_patch") return "Patch";
+	if (p_tool_name == "list") return "List";
+	if (p_tool_name == "create_file") return "Create";
+	if (p_tool_name == "skill") return "Skill";
+	return p_tool_name.capitalize();
+}
+
+void AIAssistantDock::_on_tool_meta_clicked(const Variant &p_meta) {
+	String meta = p_meta;
+	if (!meta.begins_with("tool://")) {
+		return;
+	}
+	String rest = meta.substr(7); // after "tool://"
+	int slash = rest.rfind("/");
+	if (slash < 0) {
+		return;
+	}
+	String part_id = rest.substr(0, slash);
+	String section = rest.substr(slash + 1);
+
+	String content;
+	if (section == "input" && tool_full_inputs.has(part_id)) {
+		content = tool_full_inputs[part_id];
+	} else if (section == "output" && tool_full_outputs.has(part_id)) {
+		content = tool_full_outputs[part_id];
+	}
+	if (content.is_empty()) {
+		return;
+	}
+
+	tool_detail_dialog->set_title("Tool " + section.capitalize());
+	tool_detail_content->set_text(content);
+	tool_detail_dialog->popup_centered_ratio(0.6);
 }
 
 void AIAssistantDock::_update_status(const String &p_text, const Color &p_color) {
@@ -1618,9 +1693,9 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 			}
 
 			String text_key = part_id + "_text_stream";
-			if (tool_containers.has(text_key)) {
+			if (text_stream_labels.has(text_key)) {
 				// Update existing streaming text label
-				RichTextLabel *text_label = tool_containers[text_key];
+				RichTextLabel *text_label = text_stream_labels[text_key];
 				if (text_label) {
 					String formatted = "[color=#66ff99][b]AI:[/b][/color] " + text;
 					text_label->set_text(formatted);
@@ -1639,7 +1714,7 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 				msg_container->add_child(text_label);
 				msg_container->add_child(memnew(HSeparator));
 				chat_container->add_child(msg_container);
-				tool_containers[text_key] = text_label;
+				text_stream_labels[text_key] = text_label;
 
 				// Log first appearance
 				String preview = text.substr(0, 150);
@@ -1670,9 +1745,9 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 				String text = String(part.get("text", "")).strip_edges();
 				if (!text.is_empty()) {
 					String text_key = part_id + "_text_stream";
-					if (tool_containers.has(text_key)) {
+					if (text_stream_labels.has(text_key)) {
 						// Update existing streaming label with final text
-						RichTextLabel *text_label = tool_containers[text_key];
+						RichTextLabel *text_label = text_stream_labels[text_key];
 						if (text_label) {
 							String formatted = "[color=#66ff99][b]AI:[/b][/color] " + text;
 							text_label->set_text(formatted);
@@ -2364,23 +2439,25 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 				}
 			}
 		} else if (role == "assistant") {
-			// Extract text from assistant message parts
-			String full_text;
+			// Extract text and tool parts from assistant message
 			for (int j = 0; j < parts.size(); j++) {
 				Dictionary part = parts[j];
 				String type = part.get("type", "");
 				if (type == "text") {
 					String text = part.get("text", "");
 					if (!text.is_empty()) {
-						if (!full_text.is_empty()) {
-							full_text += "\n";
-						}
-						full_text += text;
+						_add_ai_message(text);
 					}
+				} else if (type == "tool") {
+					String part_id = part.get("id", "tool_hist_" + itos(i) + "_" + itos(j));
+					String tool_name = part.get("tool", "unknown");
+					if (tool_name == "question") {
+						continue;
+					}
+					Dictionary state = part.get("state", Dictionary());
+					String tool_status = state.get("status", "completed");
+					_add_tool_message(part_id, tool_name, tool_status, state);
 				}
-			}
-			if (!full_text.is_empty()) {
-				_add_ai_message(full_text);
 			}
 		}
 	}
