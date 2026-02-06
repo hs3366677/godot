@@ -684,6 +684,30 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
 	// Tools (denoise)
 	EDITOR_SETTING_USAGE(Variant::STRING, PROPERTY_HINT_GLOBAL_DIR, "filesystem/tools/oidn/oidn_denoise_path", "", "", PROPERTY_USAGE_DEFAULT)
 
+	/* AI Asset Providers */
+
+	// Server
+	EDITOR_SETTING_BASIC(Variant::STRING, PROPERTY_HINT_PLACEHOLDER_TEXT, "ai/server/url", "http://localhost:4096", "OpenCode AI server URL")
+	_initial_set("ai/server/auto_sync_config", false);
+
+	// Meshy - 3D Model Generation
+	_initial_set("ai/providers/meshy/enabled", true);
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_PASSWORD, "ai/providers/meshy/api_key", "", "")
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_PLACEHOLDER_TEXT, "ai/providers/meshy/api_url", "", "https://api.meshy.ai/openapi/v2")
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_ENUM, "ai/providers/meshy/default_model", "meshy-6", "meshy-6,meshy-5")
+
+	// Doubao (Volcano Engine) - 2D Image/Texture Generation
+	_initial_set("ai/providers/doubao/enabled", true);
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_PASSWORD, "ai/providers/doubao/api_key", "", "")
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_PLACEHOLDER_TEXT, "ai/providers/doubao/api_url", "", "https://visual.volcengineapi.com/v1")
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_ENUM, "ai/providers/doubao/default_model", "seedream-v4", "seedream-v4,seedream-v3")
+
+	// Suno - Audio/Music Generation
+	_initial_set("ai/providers/suno/enabled", true);
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_PASSWORD, "ai/providers/suno/api_key", "", "")
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_PLACEHOLDER_TEXT, "ai/providers/suno/api_url", "", "https://api.sunoapi.org/v1")
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_ENUM, "ai/providers/suno/default_model", "suno-v5", "suno-v5,suno-v4,suno-sfx")
+
 	/* Docks */
 
 	// SceneTree
