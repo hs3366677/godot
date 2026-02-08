@@ -118,10 +118,6 @@ public:
 	static Error set_metadata(const String &p_path, const Dictionary &p_metadata);
 	static Error update_metadata(const String &p_path, const Dictionary &p_updates);
 
-	// Sidecar file operations (.ai.json)
-	static String get_sidecar_path(const String &p_asset_path);
-	static Dictionary get_sidecar_metadata(const String &p_path);
-	static Error write_sidecar_metadata(const String &p_path, const Dictionary &p_metadata);
 	static Error append_version_history(const String &p_path, const Dictionary &p_version_entry);
 
 	// Bundle operations

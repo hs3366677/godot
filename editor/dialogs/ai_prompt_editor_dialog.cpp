@@ -29,8 +29,11 @@
 
 #include "ai_prompt_editor_dialog.h"
 
+#include "core/config/project_settings.h"
+#include "core/io/json.h"
 #include "editor/editor_string_names.h"
 #include "scene/gui/separator.h"
+#include "scene/main/http_request.h"
 
 void AIPromptEditorDialog::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("prompt_confirmed", PropertyInfo(Variant::STRING, "prompt"), PropertyInfo(Variant::STRING, "negative_prompt"), PropertyInfo(Variant::STRING, "model"), PropertyInfo(Variant::INT, "seed")));
@@ -47,9 +50,12 @@ void AIPromptEditorDialog::_notification(int p_what) {
 
 void AIPromptEditorDialog::_create_ui() {
 	set_title(TTR("Edit Prompt & Regenerate"));
-	set_min_size(Size2(500, 400));
+	set_min_size(Size2(600, 550));
 
 	VBoxContainer *main_vbox = memnew(VBoxContainer);
+	main_vbox->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT, Control::PRESET_MODE_MINSIZE, 8);
+	main_vbox->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	main_vbox->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	add_child(main_vbox);
 
 	// Asset info row
@@ -61,7 +67,7 @@ void AIPromptEditorDialog::_create_ui() {
 	asset_row->add_child(asset_title);
 
 	asset_label = memnew(Label);
-	asset_label->set_h_size_flags(SIZE_EXPAND_FILL);
+	asset_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	asset_row->add_child(asset_label);
 
 	// Provider & Model row
@@ -90,9 +96,10 @@ void AIPromptEditorDialog::_create_ui() {
 	main_vbox->add_child(prompt_title);
 
 	prompt_edit = memnew(TextEdit);
-	prompt_edit->set_custom_minimum_size(Size2(0, 80));
+	prompt_edit->set_custom_minimum_size(Size2(0, 120));
 	prompt_edit->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
-	prompt_edit->set_v_size_flags(SIZE_EXPAND_FILL);
+	prompt_edit->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	prompt_edit->set_stretch_ratio(3.0);
 	main_vbox->add_child(prompt_edit);
 
 	// Negative prompt section
@@ -101,8 +108,10 @@ void AIPromptEditorDialog::_create_ui() {
 	main_vbox->add_child(negative_prompt_title);
 
 	negative_prompt_edit = memnew(TextEdit);
-	negative_prompt_edit->set_custom_minimum_size(Size2(0, 40));
+	negative_prompt_edit->set_custom_minimum_size(Size2(0, 60));
 	negative_prompt_edit->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
+	negative_prompt_edit->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	negative_prompt_edit->set_stretch_ratio(1.0);
 	main_vbox->add_child(negative_prompt_edit);
 
 	main_vbox->add_child(memnew(HSeparator));
@@ -120,7 +129,7 @@ void AIPromptEditorDialog::_create_ui() {
 
 	instruction_edit = memnew(LineEdit);
 	instruction_edit->set_placeholder(TTR("e.g., \"make it more cartoon-like\" or \"add a shield\""));
-	instruction_edit->set_h_size_flags(SIZE_EXPAND_FILL);
+	instruction_edit->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	instruction_row->add_child(instruction_edit);
 
 	refine_button = memnew(Button);
@@ -150,8 +159,15 @@ void AIPromptEditorDialog::_create_ui() {
 	random_seed_button->connect(SceneStringName(pressed), callable_mp(this, &AIPromptEditorDialog::_on_random_seed_pressed));
 	seed_container->add_child(random_seed_button);
 
-	seed_container->add_child(memnew(Control)); // Spacer
-	seed_container->get_child(seed_container->get_child_count() - 1)->set_h_size_flags(SIZE_EXPAND_FILL);
+	Control *spacer = memnew(Control);
+	spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	seed_container->add_child(spacer);
+
+	// Transparent background option
+	transparent_bg_checkbox = memnew(CheckBox);
+	transparent_bg_checkbox->set_text(TTR("Remove white background (make transparent)"));
+	transparent_bg_checkbox->set_tooltip_text(TTR("Convert white/near-white pixels to transparent after generation"));
+	seed_container->add_child(transparent_bg_checkbox);
 
 	// Version info
 	version_label = memnew(Label);
@@ -167,33 +183,75 @@ void AIPromptEditorDialog::_create_ui() {
 	connect("confirmed", callable_mp(this, &AIPromptEditorDialog::_on_confirmed));
 }
 
+Vector<String> AIPromptEditorDialog::_get_headers() const {
+	Vector<String> headers;
+	headers.push_back("Content-Type: application/json");
+	headers.push_back("Accept: application/json");
+	String project_path = ProjectSettings::get_singleton()->get_resource_path();
+	headers.push_back("x-opencode-directory: " + ProjectSettings::get_singleton()->globalize_path(project_path));
+	return headers;
+}
+
 void AIPromptEditorDialog::_load_models() {
 	model_selector->clear();
+	model_selector->add_item(TTR("Loading..."), 0);
 
-	// TODO: Fetch models from OpenCode API based on provider
-	// For now, add placeholder models
-	String provider = original_metadata.get(AIAssetMetadata::KEY_PROVIDER, "");
+	String url = service_url + "/ai-assets/models";
+	models_request->request(url, _get_headers());
+}
 
-	if (provider == "meshy") {
-		model_selector->add_item("meshy-6", 0);
-		model_selector->add_item("meshy-5", 1);
-	} else if (provider == "doubao") {
-		model_selector->add_item("seedream-v4", 0);
-		model_selector->add_item("seedream-v3", 1);
-	} else if (provider == "suno") {
-		model_selector->add_item("suno-v5", 0);
-		model_selector->add_item("suno-v4", 1);
-	} else {
+void AIPromptEditorDialog::_on_models_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	model_selector->clear();
+
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		model_selector->add_item("default", 0);
+		return;
+	}
+
+	String response_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+	JSON json;
+	if (json.parse(response_str) != OK) {
+		model_selector->add_item("default", 0);
+		return;
+	}
+
+	// Response is Record<providerId, ModelInfo[]>
+	Dictionary models_by_provider = json.get_data();
+	String current_model = original_metadata.get(AIAssetMetadata::KEY_MODEL, "");
+	int select_idx = -1;
+
+	Array provider_ids = models_by_provider.keys();
+	for (int p = 0; p < provider_ids.size(); p++) {
+		Array models = models_by_provider[provider_ids[p]];
+		for (int m = 0; m < models.size(); m++) {
+			Dictionary model_dict = models[m];
+			String model_id = model_dict.get("id", "");
+
+			// Build display label with price if available
+			String label = model_id;
+			if (model_dict.has("pricing")) {
+				Dictionary pricing = model_dict["pricing"];
+				double cost = (double)pricing.get("cost", 0.0);
+				if (cost > 0) {
+					label = vformat("%s ($%s)", model_id, String::num(cost, cost < 0.01 ? 4 : 3));
+				}
+			}
+
+			int idx = model_selector->get_item_count();
+			model_selector->add_item(label, idx);
+			model_selector->set_item_metadata(idx, model_id);
+			if (model_id == current_model) {
+				select_idx = idx;
+			}
+		}
+	}
+
+	if (model_selector->get_item_count() == 0) {
 		model_selector->add_item("default", 0);
 	}
 
-	// Select current model
-	String current_model = original_metadata.get(AIAssetMetadata::KEY_MODEL, "");
-	for (int i = 0; i < model_selector->get_item_count(); i++) {
-		if (model_selector->get_item_text(i) == current_model) {
-			model_selector->select(i);
-			break;
-		}
+	if (select_idx >= 0) {
+		model_selector->select(select_idx);
 	}
 }
 
@@ -203,13 +261,55 @@ void AIPromptEditorDialog::_on_refine_pressed() {
 		return;
 	}
 
-	// TODO: Call OpenCode API to refine prompt
-	// For now, just append the instruction
-	String current_prompt = prompt_edit->get_text();
-	prompt_edit->set_text(current_prompt + ". " + instruction);
+	String current_prompt = prompt_edit->get_text().strip_edges();
+	if (current_prompt.is_empty()) {
+		return;
+	}
 
-	instruction_edit->clear();
-	status_label->set_text(TTR("Prompt refined. Review and confirm."));
+	// Build request body
+	Dictionary body;
+	body["prompt"] = current_prompt;
+	body["instruction"] = instruction;
+
+	String asset_type = original_metadata.get(AIAssetMetadata::KEY_ASSET_TYPE, "");
+	if (!asset_type.is_empty()) {
+		body["assetType"] = asset_type;
+	}
+
+	String json_body = JSON::stringify(body);
+	String url = service_url + "/ai-assets/refine-prompt";
+
+	refine_button->set_disabled(true);
+	status_label->set_text(TTR("Refining prompt..."));
+
+	refine_request->request(url, _get_headers(), HTTPClient::METHOD_POST, json_body);
+}
+
+void AIPromptEditorDialog::_on_refine_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	refine_button->set_disabled(false);
+
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		status_label->set_text(TTR("Failed to refine prompt."));
+		return;
+	}
+
+	String response_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+	JSON json;
+	if (json.parse(response_str) != OK) {
+		status_label->set_text(TTR("Invalid response from server."));
+		return;
+	}
+
+	Dictionary resp = json.get_data();
+	String refined = resp.get("refinedPrompt", "");
+
+	if (!refined.is_empty()) {
+		prompt_edit->set_text(refined);
+		instruction_edit->clear();
+		status_label->set_text(TTR("Prompt refined. Review and confirm."));
+	} else {
+		status_label->set_text(TTR("No refined prompt returned."));
+	}
 }
 
 void AIPromptEditorDialog::_on_random_seed_pressed() {
@@ -226,6 +326,7 @@ void AIPromptEditorDialog::_on_confirmed() {
 	String model = get_selected_model();
 	int seed = get_seed();
 
+	print_line(vformat("AIPromptEditor: confirmed prompt='%s' model='%s' seed=%d", prompt.left(50), model, seed));
 	emit_signal("prompt_confirmed", prompt, negative_prompt, model, seed);
 }
 
@@ -282,6 +383,11 @@ void AIPromptEditorDialog::setup_for_asset(const String &p_path, Mode p_mode) {
 	int seed = original_metadata.get(AIAssetMetadata::KEY_SEED, -1);
 	seed_spinbox->set_value(seed);
 
+	// Load transparent_bg option from parameters
+	Dictionary params = original_metadata.get(AIAssetMetadata::KEY_PARAMETERS, Dictionary());
+	bool has_transparent_bg = params.get("transparent_bg", false);
+	transparent_bg_checkbox->set_pressed(has_transparent_bg);
+
 	// Update version preview
 	_update_version_preview();
 
@@ -300,6 +406,10 @@ String AIPromptEditorDialog::get_negative_prompt() const {
 
 String AIPromptEditorDialog::get_selected_model() const {
 	if (model_selector->get_selected() >= 0) {
+		Variant meta = model_selector->get_item_metadata(model_selector->get_selected());
+		if (meta.get_type() == Variant::STRING) {
+			return meta;
+		}
 		return model_selector->get_item_text(model_selector->get_selected());
 	}
 	return "";
@@ -309,6 +419,18 @@ int AIPromptEditorDialog::get_seed() const {
 	return (int)seed_spinbox->get_value();
 }
 
+bool AIPromptEditorDialog::get_transparent_bg() const {
+	return transparent_bg_checkbox->is_pressed();
+}
+
 AIPromptEditorDialog::AIPromptEditorDialog() {
 	_create_ui();
+
+	refine_request = memnew(HTTPRequest);
+	add_child(refine_request);
+	refine_request->connect("request_completed", callable_mp(this, &AIPromptEditorDialog::_on_refine_completed));
+
+	models_request = memnew(HTTPRequest);
+	add_child(models_request);
+	models_request->connect("request_completed", callable_mp(this, &AIPromptEditorDialog::_on_models_received));
 }

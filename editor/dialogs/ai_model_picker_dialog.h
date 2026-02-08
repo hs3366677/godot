@@ -37,6 +37,8 @@
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/tree.h"
 
+class HTTPRequest;
+
 class AIModelPickerDialog : public ConfirmationDialog {
 	GDCLASS(AIModelPickerDialog, ConfirmationDialog);
 
@@ -47,6 +49,7 @@ public:
 		String provider_id;
 		String provider_name;
 		String description;
+		double cost = 0.0;
 		Vector<String> supported_types;
 		Vector<String> supported_transforms;
 	};
@@ -65,12 +68,18 @@ private:
 	Vector<ModelInfo> all_models;
 	Vector<ModelInfo> filtered_models;
 
+	// HTTP
+	String service_url = "http://localhost:4096";
+	HTTPRequest *http_request = nullptr;
+	Vector<String> _get_headers() const;
+
 	void _create_ui();
 	void _load_providers();
 	void _load_models_for_provider(const String &p_provider);
 	void _on_provider_selected();
 	void _on_model_selected(int p_index);
 	void _on_model_activated(int p_index);
+	void _on_models_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _filter_models();
 
 protected:

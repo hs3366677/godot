@@ -83,7 +83,15 @@ private:
 	Button *clear_button = nullptr;
 	Button *verify_button = nullptr;
 	Button *reconnect_button = nullptr;
+	Button *settings_button = nullptr;
 	Label *status_label = nullptr;
+
+	// Settings dialog (asset provider configuration)
+	AcceptDialog *settings_dialog = nullptr;
+	LineEdit *replicate_token_input = nullptr;
+	Button *settings_test_button = nullptr;
+	Label *settings_status_label = nullptr;
+	HTTPRequest *settings_http_request = nullptr;
 
 	// Model selector (two-level submenu: Provider → Models)
 	MenuButton *model_button = nullptr;
@@ -126,6 +134,15 @@ private:
 	TextEdit *prompt_input = nullptr;
 	Button *send_button = nullptr;
 	Button *stop_button = nullptr;
+
+	// Slash command autocomplete (inline, non-modal)
+	VBoxContainer *slash_hint_container = nullptr;
+	Vector<Button *> slash_hint_buttons;
+	Vector<int> slash_hint_cmd_indices; // Maps button index → command index
+	int slash_hint_selected = -1; // Currently highlighted hint index (-1 = none)
+	void _on_prompt_text_changed();
+	void _on_slash_hint_pressed(int p_id);
+	void _update_slash_hint_highlight();
 
 	// Mode flags
 	bool is_plan_mode = false;
@@ -229,6 +246,13 @@ private:
 	void _on_prompt_input_gui_input(const Ref<InputEvent> &p_event);
 	void _on_plan_mode_toggled(bool p_enabled);
 	void _on_auto_accept_toggled(bool p_enabled);
+	void _on_settings_pressed();
+	void _on_settings_test_pressed();
+	void _on_settings_save_pressed();
+	void _on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _auto_configure_providers();
+	void _process_slash_command(const String &p_command);
+	void _on_providers_status_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
 	// Provider/model fetching
 	void _fetch_providers();
@@ -323,6 +347,7 @@ private:
 		REQUEST_SESSION_LIST,  // Find existing session
 		REQUEST_SESSION,       // Create new session
 		REQUEST_SESSION_HISTORY, // Load session messages
+		REQUEST_DELETE_SESSION, // Delete current session
 		REQUEST_CONFIG,
 		REQUEST_MESSAGE
 	};

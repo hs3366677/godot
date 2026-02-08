@@ -18,6 +18,7 @@
 #include "editor/debugger/editor_debugger_node.h"
 #include "editor/debugger/script_editor_debugger.h"
 #include "editor/editor_interface.h"
+#include "editor/settings/editor_settings.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/run/editor_run_bar.h"
 #include "scene/gui/line_edit.h"
@@ -97,6 +98,11 @@ void AIAssistantDock::_setup_ui() {
 	reconnect_button = memnew(Button);
 	reconnect_button->set_text("Connect");
 	toolbar_container->add_child(reconnect_button);
+
+	settings_button = memnew(Button);
+	settings_button->set_text("Settings");
+	settings_button->set_tooltip_text("Configure AI asset generation providers");
+	toolbar_container->add_child(settings_button);
 
 	toolbar_container->add_spacer();
 
@@ -194,6 +200,12 @@ void AIAssistantDock::_setup_ui() {
 	stop_button->set_visible(false); // Hidden by default, shown during processing
 	stop_button->add_theme_color_override("font_color", Color(1.0, 0.4, 0.4));
 	button_container->add_child(stop_button);
+
+	// Slash command autocomplete (inline container above prompt_input)
+	slash_hint_container = memnew(VBoxContainer);
+	slash_hint_container->set_visible(false);
+	input_container->add_child(slash_hint_container);
+	input_container->move_child(slash_hint_container, 0); // Place above prompt_input
 
 	// Processing indicator — overlay on top-right of prompt_input
 	processing_label = memnew(Label);
@@ -298,6 +310,51 @@ void AIAssistantDock::_setup_ui() {
 	auth_code_dialog->add_child(dialog_vbox);
 	add_child(auth_code_dialog);
 
+	// Settings dialog (asset provider configuration)
+	settings_dialog = memnew(AcceptDialog);
+	settings_dialog->set_title("Asset Provider Settings");
+	settings_dialog->set_ok_button_text("Save");
+	settings_dialog->set_min_size(Size2(450, 0));
+
+	VBoxContainer *settings_vbox = memnew(VBoxContainer);
+
+	Label *replicate_label = memnew(Label);
+	replicate_label->set_text("Replicate API Token:");
+	settings_vbox->add_child(replicate_label);
+
+	Label *replicate_hint = memnew(Label);
+	replicate_hint->set_text("Get your token from replicate.com/account/api-tokens");
+	replicate_hint->add_theme_font_size_override("font_size", 11);
+	replicate_hint->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
+	settings_vbox->add_child(replicate_hint);
+
+	replicate_token_input = memnew(LineEdit);
+	replicate_token_input->set_placeholder("r8_...");
+	replicate_token_input->set_secret(true);
+	settings_vbox->add_child(replicate_token_input);
+
+	HBoxContainer *settings_button_row = memnew(HBoxContainer);
+	settings_test_button = memnew(Button);
+	settings_test_button->set_text("Test Connection");
+	settings_button_row->add_child(settings_test_button);
+
+	settings_button_row->add_spacer();
+
+	settings_status_label = memnew(Label);
+	settings_status_label->set_text("");
+	settings_status_label->add_theme_font_size_override("font_size", 12);
+	settings_button_row->add_child(settings_status_label);
+	settings_vbox->add_child(settings_button_row);
+
+	settings_dialog->add_child(settings_vbox);
+	add_child(settings_dialog);
+
+	settings_http_request = memnew(HTTPRequest);
+	add_child(settings_http_request);
+	settings_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_settings_request_completed));
+	settings_test_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_settings_test_pressed));
+	settings_dialog->connect("confirmed", callable_mp(this, &AIAssistantDock::_on_settings_save_pressed));
+
 	// Tool detail viewer popup (shows full input/output on click)
 	tool_detail_dialog = memnew(AcceptDialog);
 	tool_detail_dialog->set_title("Tool Details");
@@ -364,8 +421,10 @@ void AIAssistantDock::_connect_signals() {
 	clear_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_clear_pressed));
 	verify_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_verify_pressed));
 	reconnect_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_reconnect_pressed));
+	settings_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_settings_pressed));
 	template_button->get_popup()->connect("id_pressed", callable_mp(this, &AIAssistantDock::_on_template_selected));
 	prompt_input->connect("gui_input", callable_mp(this, &AIAssistantDock::_on_prompt_input_gui_input));
+	prompt_input->connect("text_changed", callable_mp(this, &AIAssistantDock::_on_prompt_text_changed));
 	http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_http_request_completed));
 
 	// Mode toggles
@@ -805,6 +864,9 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 				if (question_poll_timer) {
 					question_poll_timer->start();
 				}
+				// Auto-configure saved provider keys on the server
+				_auto_configure_providers();
+
 				// Fetch config to get saved model, then fetch available models
 				_fetch_config();
 			} else {
@@ -813,6 +875,14 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 				_update_connection_indicator();
 				_add_system_message("Failed to create session");
 			}
+		} break;
+
+		case REQUEST_DELETE_SESSION: {
+			// Session deleted on server, now reset and create new one
+			session_id = "";
+			coding_standards_injected = false;
+			_add_system_message("Previous session deleted. Creating new session...");
+			_create_session();
 		} break;
 
 		case REQUEST_CONFIG: {
@@ -924,6 +994,7 @@ void AIAssistantDock::_on_auto_accept_toggled(bool p_enabled) {
 }
 
 void AIAssistantDock::_on_clear_pressed() {
+	// Clear UI immediately
 	while (chat_container->get_child_count() > 0) {
 		Node *child = chat_container->get_child(0);
 		chat_container->remove_child(child);
@@ -931,7 +1002,179 @@ void AIAssistantDock::_on_clear_pressed() {
 	}
 	chat_history.clear();
 	_clear_tool_tracking();
-	_add_system_message("Chat cleared.");
+	_add_system_message("Chat cleared. Creating new session...");
+
+	// Delete the current session on the server (if it exists)
+	if (!session_id.is_empty()) {
+		pending_request = REQUEST_DELETE_SESSION;
+		String url = service_url + "/session/" + session_id;
+		http_request->request(url, _get_headers_with_directory(), HTTPClient::METHOD_DELETE);
+	} else {
+		// No session to delete, just reset and create new one
+		coding_standards_injected = false;
+		_create_session();
+	}
+}
+
+void AIAssistantDock::_on_settings_pressed() {
+	settings_status_label->set_text("");
+	// Pre-fill with saved token from EditorSettings
+	String saved = EDITOR_GET("ai/providers/replicate/api_key");
+	if (!saved.is_empty()) {
+		replicate_token_input->set_text(saved);
+	}
+	settings_dialog->popup_centered();
+}
+
+void AIAssistantDock::_on_settings_test_pressed() {
+	String token = replicate_token_input->get_text().strip_edges();
+	if (token.is_empty()) {
+		settings_status_label->set_text("Please enter a token");
+		settings_status_label->add_theme_color_override("font_color", Color(1, 0.5, 0));
+		return;
+	}
+
+	settings_status_label->set_text("Testing...");
+	settings_status_label->add_theme_color_override("font_color", Color(1, 1, 0));
+	settings_test_button->set_disabled(true);
+
+	// POST to /ai-assets/providers/configure to test+register
+	String url = service_url + "/ai-assets/providers/configure";
+	Dictionary body;
+	body["providerId"] = "replicate";
+	body["apiKey"] = token;
+
+	String json_body = JSON::stringify(body);
+	Vector<String> headers = _get_headers_with_directory();
+	settings_http_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
+}
+
+void AIAssistantDock::_on_settings_save_pressed() {
+	String token = replicate_token_input->get_text().strip_edges();
+	if (token.is_empty()) {
+		return;
+	}
+
+	// Persist to EditorSettings immediately (survives editor restarts)
+	EditorSettings::get_singleton()->set("ai/providers/replicate/api_key", token);
+	EditorSettings::get_singleton()->save();
+
+	// Also configure on the running server
+	String url = service_url + "/ai-assets/providers/configure";
+	Dictionary body;
+	body["providerId"] = "replicate";
+	body["apiKey"] = token;
+
+	String json_body = JSON::stringify(body);
+	Vector<String> headers = _get_headers_with_directory();
+	settings_http_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
+}
+
+void AIAssistantDock::_on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	settings_test_button->set_disabled(false);
+
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		settings_status_label->set_text("Connection failed");
+		settings_status_label->add_theme_color_override("font_color", Color(1, 0, 0));
+		return;
+	}
+
+	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	JSON json;
+	Error err = json.parse(response_text);
+
+	if (err != OK) {
+		settings_status_label->set_text("Invalid response");
+		settings_status_label->add_theme_color_override("font_color", Color(1, 0, 0));
+		return;
+	}
+
+	Dictionary result = json.get_data();
+	if (result.get("success", false)) {
+		settings_status_label->set_text("Connected!");
+		settings_status_label->add_theme_color_override("font_color", Color(0, 1, 0));
+		_add_system_message("Replicate provider configured successfully!");
+	} else {
+		String error_msg = result.get("error", "Unknown error");
+		settings_status_label->set_text("Failed: " + error_msg);
+		settings_status_label->add_theme_color_override("font_color", Color(1, 0, 0));
+	}
+}
+
+void AIAssistantDock::_auto_configure_providers() {
+	// Send all saved provider API keys to the running server.
+	// Called on connect/reconnect so the server always has the keys.
+	struct ProviderEntry {
+		const char *id;
+		const char *setting;
+	};
+	ProviderEntry entries[] = {
+		{ "replicate", "ai/providers/replicate/api_key" },
+		{ "meshy", "ai/providers/meshy/api_key" },
+		{ "doubao", "ai/providers/doubao/api_key" },
+		{ "suno", "ai/providers/suno/api_key" },
+	};
+
+	Vector<String> headers = _get_headers_with_directory();
+
+	for (const ProviderEntry &entry : entries) {
+		String api_key = EDITOR_GET(entry.setting);
+		if (api_key.is_empty()) {
+			continue;
+		}
+
+		Dictionary body;
+		body["providerId"] = entry.id;
+		body["apiKey"] = api_key;
+
+		String json_body = JSON::stringify(body);
+		String url = service_url + "/ai-assets/providers/configure";
+
+		// Use a one-off HTTPRequest — fire and forget
+		HTTPRequest *req = memnew(HTTPRequest);
+		add_child(req);
+		req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+		req->request(url, headers, HTTPClient::METHOD_POST, json_body);
+	}
+}
+
+void AIAssistantDock::_on_providers_status_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	// Clean up the one-off request node
+	Node *sender = Object::cast_to<Node>(get_child(get_child_count() - 1));
+
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		_add_ai_message("Failed to fetch provider status.");
+		return;
+	}
+
+	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	JSON json;
+	Error err = json.parse(response_text);
+
+	if (err != OK) {
+		_add_ai_message("Invalid response from server.");
+		return;
+	}
+
+	Array providers_data = json.get_data();
+	if (providers_data.is_empty()) {
+		_add_ai_message("**No asset providers configured.**\n\nUse `/connect replicate <token>` or click **Settings** to configure one.");
+		return;
+	}
+
+	String msg = "**Configured Asset Providers:**\n\n";
+	for (int i = 0; i < providers_data.size(); i++) {
+		Dictionary p = providers_data[i];
+		String id = p.get("name", "");
+		Array types = p.get("supportedTypes", Array());
+		msg += "- **" + id + "**: ";
+		for (int j = 0; j < types.size(); j++) {
+			if (j > 0) msg += ", ";
+			msg += String(types[j]);
+		}
+		msg += "\n";
+	}
+	_add_ai_message(msg);
 }
 
 void AIAssistantDock::_on_reconnect_pressed() {
@@ -979,19 +1222,192 @@ void AIAssistantDock::_on_template_selected(int p_id) {
 	}
 }
 
+void AIAssistantDock::_on_prompt_text_changed() {
+	String text = prompt_input->get_text().strip_edges();
+
+	// Clear previous hint buttons
+	for (int i = slash_hint_buttons.size() - 1; i >= 0; i--) {
+		slash_hint_container->remove_child(slash_hint_buttons[i]);
+		memdelete(slash_hint_buttons[i]);
+	}
+	slash_hint_buttons.clear();
+	slash_hint_cmd_indices.clear();
+
+	if (text.begins_with("/") && !text.contains("\n")) {
+		String filter = text.to_lower();
+
+		struct CommandDef {
+			String command;
+			String fill_text;
+			String description;
+		};
+		CommandDef commands[] = {
+			{ "/connect replicate <token>", "/connect replicate ", "Configure Replicate API" },
+			{ "/providers", "/providers", "List configured providers" },
+			{ "/disconnect replicate", "/disconnect replicate", "Remove Replicate provider" },
+		};
+
+		for (int i = 0; i < 3; i++) {
+			const CommandDef &cmd = commands[i];
+			if (cmd.command.to_lower().begins_with(filter) || filter == "/") {
+				Button *btn = memnew(Button);
+				btn->set_text(cmd.command + "   " + cmd.description);
+				btn->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+				btn->add_theme_color_override("font_color", Color(0.7, 0.85, 1.0));
+				btn->set_flat(true);
+				btn->set_focus_mode(Control::FOCUS_NONE); // Don't steal focus from input
+
+				int cmd_index = i;
+				btn->connect("pressed", callable_mp(this, &AIAssistantDock::_on_slash_hint_pressed).bind(cmd_index));
+
+				slash_hint_container->add_child(btn);
+				slash_hint_buttons.push_back(btn);
+				slash_hint_cmd_indices.push_back(i);
+			}
+		}
+
+		slash_hint_container->set_visible(slash_hint_buttons.size() > 0);
+		slash_hint_selected = slash_hint_buttons.size() > 0 ? 0 : -1;
+		_update_slash_hint_highlight();
+	} else {
+		slash_hint_container->set_visible(false);
+		slash_hint_selected = -1;
+	}
+}
+
+void AIAssistantDock::_on_slash_hint_pressed(int p_id) {
+	String commands[] = {
+		"/connect replicate ",
+		"/providers",
+		"/disconnect replicate",
+	};
+
+	if (p_id >= 0 && p_id < 3) {
+		prompt_input->set_text(commands[p_id]);
+		prompt_input->set_caret_column(commands[p_id].length());
+		prompt_input->set_caret_line(0);
+		prompt_input->grab_focus();
+	}
+
+	// Hide hints after selection
+	slash_hint_container->set_visible(false);
+}
+
+void AIAssistantDock::_update_slash_hint_highlight() {
+	for (int i = 0; i < slash_hint_buttons.size(); i++) {
+		if (i == slash_hint_selected) {
+			slash_hint_buttons[i]->add_theme_color_override("font_color", Color(1.0, 1.0, 1.0));
+			Ref<StyleBox> hover_style = slash_hint_buttons[i]->get_theme_stylebox("hover");
+			if (hover_style.is_valid()) {
+				slash_hint_buttons[i]->add_theme_style_override("normal", hover_style);
+			}
+		} else {
+			slash_hint_buttons[i]->add_theme_color_override("font_color", Color(0.7, 0.85, 1.0));
+			slash_hint_buttons[i]->remove_theme_style_override("normal");
+		}
+	}
+}
+
 void AIAssistantDock::_on_prompt_input_gui_input(const Ref<InputEvent> &p_event) {
 	Ref<InputEventKey> key = p_event;
-	if (key.is_valid() && key->is_pressed() && key->get_keycode() == Key::ENTER && !key->is_shift_pressed()) {
+	if (!key.is_valid() || !key->is_pressed()) {
+		return;
+	}
+
+	bool hints_visible = slash_hint_container->is_visible() && slash_hint_buttons.size() > 0;
+
+	if (key->get_keycode() == Key::ENTER && !key->is_shift_pressed()) {
+		slash_hint_container->set_visible(false);
 		_on_send_pressed();
+		prompt_input->accept_event();
+	} else if (key->get_keycode() == Key::ESCAPE) {
+		if (hints_visible) {
+			slash_hint_container->set_visible(false);
+			slash_hint_selected = -1;
+			prompt_input->accept_event();
+		}
+	} else if (key->get_keycode() == Key::TAB && hints_visible) {
+		// Tab autocompletes the selected hint (map button index → command index)
+		if (slash_hint_selected >= 0 && slash_hint_selected < slash_hint_cmd_indices.size()) {
+			_on_slash_hint_pressed(slash_hint_cmd_indices[slash_hint_selected]);
+		}
+		prompt_input->accept_event();
+	} else if (key->get_keycode() == Key::DOWN && hints_visible) {
+		slash_hint_selected = (slash_hint_selected + 1) % slash_hint_buttons.size();
+		_update_slash_hint_highlight();
+		prompt_input->accept_event();
+	} else if (key->get_keycode() == Key::UP && hints_visible) {
+		slash_hint_selected = (slash_hint_selected - 1 + slash_hint_buttons.size()) % slash_hint_buttons.size();
+		_update_slash_hint_highlight();
 		prompt_input->accept_event();
 	}
 }
 
 void AIAssistantDock::_process_prompt(const String &p_prompt) {
+	// Intercept slash commands before sending to AI
+	if (p_prompt.begins_with("/")) {
+		_process_slash_command(p_prompt);
+		return;
+	}
+
 	if (connection_status == CONNECTED && !session_id.is_empty()) {
 		_send_message(p_prompt);
 	} else {
 		_process_local_command(p_prompt);
+	}
+}
+
+void AIAssistantDock::_process_slash_command(const String &p_command) {
+	String lower = p_command.to_lower().strip_edges();
+
+	if (lower.begins_with("/connect replicate")) {
+		// Extract token if provided inline: /connect replicate r8_xxxxx
+		String token;
+		PackedStringArray parts = p_command.strip_edges().split(" ");
+		if (parts.size() >= 3) {
+			token = parts[2];
+		}
+
+		if (token.is_empty()) {
+			_add_ai_message("Please provide your Replicate API token:\n\n`/connect replicate <your_token>`\n\nGet your token from: **replicate.com/account/api-tokens**");
+			return;
+		}
+
+		_add_system_message("Configuring Replicate provider...");
+
+		// POST to configure endpoint
+		String url = service_url + "/ai-assets/providers/configure";
+		Dictionary body;
+		body["providerId"] = "replicate";
+		body["apiKey"] = token;
+
+		String json_body = JSON::stringify(body);
+		Vector<String> headers = _get_headers_with_directory();
+		settings_http_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
+	} else if (lower.begins_with("/disconnect replicate")) {
+		_add_system_message("Provider disconnection is not yet supported. Restart the engine to reset providers.");
+	} else if (lower == "/providers") {
+		if (connection_status != CONNECTED) {
+			_add_ai_message("Not connected to AI service. Click **Connect** first.");
+			return;
+		}
+
+		// Fetch provider status
+		String url = service_url + "/ai-assets/providers/status";
+		Vector<String> headers = _get_headers_with_directory();
+
+		// Use a one-off request to fetch and display
+		HTTPRequest *status_request = memnew(HTTPRequest);
+		add_child(status_request);
+		status_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_providers_status_completed));
+		status_request->request(url, headers);
+	} else {
+		// Unknown slash command - pass through to AI
+		if (connection_status == CONNECTED && !session_id.is_empty()) {
+			_send_message(p_command);
+		} else {
+			_add_ai_message("Unknown command: " + p_command + "\n\nAvailable commands:\n- `/connect replicate <token>` - Configure Replicate\n- `/providers` - List configured providers\n- `/disconnect replicate` - Remove provider");
+		}
 	}
 }
 
@@ -2353,6 +2769,9 @@ void AIAssistantDock::_on_session_list_completed(int p_result, int p_code, const
 	if (question_poll_timer) {
 		question_poll_timer->start();
 	}
+
+	// Auto-configure saved provider keys on the server
+	_auto_configure_providers();
 
 	// Load chat history from the session
 	_load_session_history();

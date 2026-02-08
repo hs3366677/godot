@@ -690,6 +690,12 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
 	EDITOR_SETTING_BASIC(Variant::STRING, PROPERTY_HINT_PLACEHOLDER_TEXT, "ai/server/url", "http://localhost:4096", "OpenCode AI server URL")
 	_initial_set("ai/server/auto_sync_config", false);
 
+	// Replicate - 2D Image/Texture Generation
+	_initial_set("ai/providers/replicate/enabled", true);
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_PASSWORD, "ai/providers/replicate/api_key", "", "")
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_PLACEHOLDER_TEXT, "ai/providers/replicate/api_url", "", "")
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_ENUM, "ai/providers/replicate/default_model", "stable-diffusion", "stable-diffusion,flux-schnell,sdxl")
+
 	// Meshy - 3D Model Generation
 	_initial_set("ai/providers/meshy/enabled", true);
 	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_PASSWORD, "ai/providers/meshy/api_key", "", "")
