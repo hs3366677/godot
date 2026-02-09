@@ -90,6 +90,7 @@
 #include "editor/docks/groups_dock.h"
 #include "editor/docks/history_dock.h"
 #include "editor/docks/import_dock.h"
+#include "editor/ai_asset_generation_manager.h"
 #include "editor/plugins/ai_assistant/ai_assistant_dock.h"
 #include "editor/docks/inspector_dock.h"
 #include "editor/docks/scene_tree_dock.h"
@@ -586,18 +587,33 @@ void EditorNode::_sync_ai_provider_settings() {
 	// Build provider config from EditorSettings
 	Dictionary providers;
 
+	// Replicate
+	if (EDITOR_GET("ai/providers/replicate/enabled")) {
+		Dictionary replicate;
+		String api_key = EDITOR_GET("ai/providers/replicate/api_key");
+		if (!api_key.is_empty()) {
+			replicate["api_key"] = api_key;
+		}
+		String api_url = EDITOR_GET("ai/providers/replicate/api_url");
+		if (!api_url.is_empty()) {
+			replicate["api_url"] = api_url;
+		}
+		replicate["enabled"] = true;
+		providers["replicate"] = replicate;
+	}
+
 	// Meshy
 	if (EDITOR_GET("ai/providers/meshy/enabled")) {
 		Dictionary meshy;
 		String api_key = EDITOR_GET("ai/providers/meshy/api_key");
 		if (!api_key.is_empty()) {
-			meshy["apiKey"] = api_key;
+			meshy["api_key"] = api_key;
 		}
 		String api_url = EDITOR_GET("ai/providers/meshy/api_url");
 		if (!api_url.is_empty()) {
-			meshy["apiUrl"] = api_url;
+			meshy["api_url"] = api_url;
 		}
-		meshy["defaultModel"] = EDITOR_GET("ai/providers/meshy/default_model");
+		meshy["enabled"] = true;
 		providers["meshy"] = meshy;
 	}
 
@@ -606,13 +622,13 @@ void EditorNode::_sync_ai_provider_settings() {
 		Dictionary doubao;
 		String api_key = EDITOR_GET("ai/providers/doubao/api_key");
 		if (!api_key.is_empty()) {
-			doubao["apiKey"] = api_key;
+			doubao["api_key"] = api_key;
 		}
 		String api_url = EDITOR_GET("ai/providers/doubao/api_url");
 		if (!api_url.is_empty()) {
-			doubao["apiUrl"] = api_url;
+			doubao["api_url"] = api_url;
 		}
-		doubao["defaultModel"] = EDITOR_GET("ai/providers/doubao/default_model");
+		doubao["enabled"] = true;
 		providers["doubao"] = doubao;
 	}
 
@@ -621,25 +637,25 @@ void EditorNode::_sync_ai_provider_settings() {
 		Dictionary suno;
 		String api_key = EDITOR_GET("ai/providers/suno/api_key");
 		if (!api_key.is_empty()) {
-			suno["apiKey"] = api_key;
+			suno["api_key"] = api_key;
 		}
 		String api_url = EDITOR_GET("ai/providers/suno/api_url");
 		if (!api_url.is_empty()) {
-			suno["apiUrl"] = api_url;
+			suno["api_url"] = api_url;
 		}
-		suno["defaultModel"] = EDITOR_GET("ai/providers/suno/default_model");
+		suno["enabled"] = true;
 		providers["suno"] = suno;
 	}
 
-	// Build full config
+	// Build full config — write under "asset_provider" key to match OpenCode's initFromConfig()
 	Dictionary config;
 	config["$schema"] = "https://opencode.ai/config.schema.json";
 
-	config["provider"] = providers;
+	config["asset_provider"] = providers;
 
-	// Write to project root as opencode.jsonc
+	// Write to project root as opencode.json (not .jsonc — Config.update() uses .json)
 	String project_path = ProjectSettings::get_singleton()->get_resource_path();
-	String config_path = project_path.path_join("opencode.jsonc");
+	String config_path = project_path.path_join("opencode.json");
 
 	Ref<FileAccess> f = FileAccess::open(config_path, FileAccess::WRITE);
 	if (f.is_valid()) {
@@ -9055,6 +9071,10 @@ EditorNode::EditorNode() {
 
 	ai_assistant_dock = memnew(AIAssistantDock);
 	editor_dock_manager->add_dock(ai_assistant_dock);
+
+	// AI Asset Generation Manager (singleton, not a dock)
+	AIAssetGenerationManager *ai_gen_manager = memnew(AIAssetGenerationManager);
+	add_child(ai_gen_manager);
 
 	// Add some offsets to make LEFT_R and RIGHT_L docks wider than minsize.
 	const int dock_hsize = 280;

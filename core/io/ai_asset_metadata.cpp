@@ -36,6 +36,10 @@
 #include "core/os/os.h"
 #include "core/os/time.h"
 
+// Forward declarations of file-scope helpers (defined in Version History section below).
+static Dictionary _read_json_file(const String &p_path);
+static Error _write_json_file(const String &p_path, const Dictionary &p_data);
+
 // Metadata key constants
 const char *AIAssetMetadata::KEY_ORIGIN = "origin";
 const char *AIAssetMetadata::KEY_IMPORTED_FROM = "imported_from";
@@ -85,10 +89,6 @@ void AIAssetMetadata::_bind_methods() {
 	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("get_metadata", "path"), &AIAssetMetadata::get_metadata);
 	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("set_metadata", "path", "metadata"), &AIAssetMetadata::set_metadata);
 	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("update_metadata", "path", "updates"), &AIAssetMetadata::update_metadata);
-
-	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("get_sidecar_path", "asset_path"), &AIAssetMetadata::get_sidecar_path);
-	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("get_sidecar_metadata", "path"), &AIAssetMetadata::get_sidecar_metadata);
-	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("write_sidecar_metadata", "path", "metadata"), &AIAssetMetadata::write_sidecar_metadata);
 
 	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("get_current_timestamp"), &AIAssetMetadata::get_current_timestamp);
 
@@ -236,56 +236,8 @@ Dictionary AIAssetMetadata::create_bundle_metadata(
 	return bundle;
 }
 
-String AIAssetMetadata::get_sidecar_path(const String &p_asset_path) {
-	return p_asset_path + ".ai.json";
-}
-
-Dictionary AIAssetMetadata::get_sidecar_metadata(const String &p_path) {
-	String sidecar_path = get_sidecar_path(p_path);
-
-	if (!FileAccess::exists(sidecar_path)) {
-		return Dictionary();
-	}
-
-	Ref<FileAccess> f = FileAccess::open(sidecar_path, FileAccess::READ);
-	if (f.is_null()) {
-		return Dictionary();
-	}
-
-	String content = f->get_as_text();
-	f.unref();
-
-	JSON json;
-	Error err = json.parse(content);
-	if (err != OK) {
-		return Dictionary();
-	}
-
-	Variant data = json.get_data();
-	if (data.get_type() != Variant::DICTIONARY) {
-		return Dictionary();
-	}
-
-	return data;
-}
-
-Error AIAssetMetadata::write_sidecar_metadata(const String &p_path, const Dictionary &p_metadata) {
-	String sidecar_path = get_sidecar_path(p_path);
-
-	Ref<FileAccess> f = FileAccess::open(sidecar_path, FileAccess::WRITE);
-	if (f.is_null()) {
-		return ERR_CANT_CREATE;
-	}
-
-	String json_str = JSON::stringify(p_metadata, "\t");
-	f->store_string(json_str);
-	f.unref();
-
-	return OK;
-}
-
 Error AIAssetMetadata::append_version_history(const String &p_path, const Dictionary &p_version_entry) {
-	Dictionary metadata = get_sidecar_metadata(p_path);
+	Dictionary metadata = get_metadata(p_path);
 
 	Array history;
 	if (metadata.has("history")) {
@@ -294,7 +246,7 @@ Error AIAssetMetadata::append_version_history(const String &p_path, const Dictio
 	history.push_back(p_version_entry);
 	metadata["history"] = history;
 
-	return write_sidecar_metadata(p_path, metadata);
+	return set_metadata(p_path, metadata);
 }
 
 AIAssetMetadata::Origin AIAssetMetadata::get_origin(const String &p_path) {
@@ -319,47 +271,21 @@ bool AIAssetMetadata::is_placeholder(const String &p_path) {
 }
 
 Dictionary AIAssetMetadata::get_metadata(const String &p_path) {
-	// First try sidecar file (primary source for AI metadata)
-	Dictionary sidecar = get_sidecar_metadata(p_path);
-	if (!sidecar.is_empty()) {
-		return sidecar;
-	}
-
-	// Fall back to .import file metadata field if exists
-	String import_path = p_path + ".import";
-	if (!FileAccess::exists(import_path)) {
-		return Dictionary();
-	}
-
-	Ref<FileAccess> f = FileAccess::open(import_path, FileAccess::READ);
-	if (f.is_null()) {
-		return Dictionary();
-	}
-
-	// Parse .import file for [params] section metadata
-	String section;
-	while (!f->eof_reached()) {
-		String line = f->get_line().strip_edges();
-		if (line.begins_with("[") && line.ends_with("]")) {
-			section = line.substr(1, line.length() - 2);
-		} else if (section == "params" && line.begins_with("metadata=")) {
-			String metadata_str = line.substr(9);
-			JSON json;
-			if (json.parse(metadata_str) == OK) {
-				Variant data = json.get_data();
-				if (data.get_type() == Variant::DICTIONARY) {
-					return data;
-				}
-			}
-		}
-	}
-
-	return Dictionary();
+	// Single source of truth: .ai.{filename}/metadata.json
+	return _read_json_file(get_version_index_path(p_path));
 }
 
 Error AIAssetMetadata::set_metadata(const String &p_path, const Dictionary &p_metadata) {
-	// Write to sidecar file (primary storage for AI metadata)
-	return write_sidecar_metadata(p_path, p_metadata);
+	// Write to version dir metadata.json (single source of truth)
+	String ver_dir = get_version_dir(p_path);
+	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_RESOURCES);
+	if (!da->dir_exists(ver_dir)) {
+		Error err = da->make_dir_recursive(ver_dir);
+		if (err != OK) {
+			return err;
+		}
+	}
+	return _write_json_file(get_version_index_path(p_path), p_metadata);
 }
 
 Error AIAssetMetadata::update_metadata(const String &p_path, const Dictionary &p_updates) {
@@ -520,6 +446,7 @@ Error AIAssetMetadata::save_version(const String &p_asset_path) {
 	ver_meta[KEY_PROVIDER] = meta.get(KEY_PROVIDER, "");
 	ver_meta[KEY_MODEL] = meta.get(KEY_MODEL, "");
 	ver_meta[KEY_SEED] = meta.get(KEY_SEED, -1);
+	ver_meta[KEY_PARAMETERS] = meta.get(KEY_PARAMETERS, Dictionary());
 	ver_meta[KEY_GENERATED_AT] = meta.get(KEY_GENERATED_AT, get_current_timestamp());
 
 	err = _write_json_file(get_version_meta_path(p_asset_path, version), ver_meta);
@@ -527,10 +454,9 @@ Error AIAssetMetadata::save_version(const String &p_asset_path) {
 		return err;
 	}
 
-	// Update version index (metadata.json).
-	Dictionary index = read_version_index(p_asset_path);
-	index[KEY_ORIGIN] = meta.get(KEY_ORIGIN, origin_to_string(ORIGIN_UNKNOWN));
-	index[KEY_PROVIDER] = meta.get(KEY_PROVIDER, "");
+	// Update metadata.json — merge full asset metadata with version tracking fields.
+	// Start from the full asset metadata so all fields are preserved.
+	Dictionary index = meta.duplicate();
 	index[KEY_CURRENT_VERSION] = version;
 
 	Array history;
@@ -568,24 +494,30 @@ Error AIAssetMetadata::use_version(const String &p_asset_path, int p_version) {
 		return err;
 	}
 
-	// Apply the version's prompt/model/seed to the sidecar.
+	// Apply the version's prompt/model/seed to the metadata.
 	Dictionary ver_meta = read_version_meta(p_asset_path, p_version);
-	Dictionary sidecar = get_sidecar_metadata(p_asset_path);
-	if (!sidecar.is_empty()) {
+	Dictionary asset_meta = get_metadata(p_asset_path);
+	if (!asset_meta.is_empty()) {
 		if (ver_meta.has(KEY_PROMPT)) {
-			sidecar[KEY_PROMPT] = ver_meta[KEY_PROMPT];
+			asset_meta[KEY_PROMPT] = ver_meta[KEY_PROMPT];
 		}
 		if (ver_meta.has(KEY_NEGATIVE_PROMPT)) {
-			sidecar[KEY_NEGATIVE_PROMPT] = ver_meta[KEY_NEGATIVE_PROMPT];
+			asset_meta[KEY_NEGATIVE_PROMPT] = ver_meta[KEY_NEGATIVE_PROMPT];
 		}
 		if (ver_meta.has(KEY_MODEL)) {
-			sidecar[KEY_MODEL] = ver_meta[KEY_MODEL];
+			asset_meta[KEY_MODEL] = ver_meta[KEY_MODEL];
 		}
 		if (ver_meta.has(KEY_SEED)) {
-			sidecar[KEY_SEED] = ver_meta[KEY_SEED];
+			asset_meta[KEY_SEED] = ver_meta[KEY_SEED];
 		}
-		sidecar[KEY_VERSION] = p_version;
-		write_sidecar_metadata(p_asset_path, sidecar);
+		if (ver_meta.has(KEY_PROVIDER)) {
+			asset_meta[KEY_PROVIDER] = ver_meta[KEY_PROVIDER];
+		}
+		if (ver_meta.has(KEY_PARAMETERS)) {
+			asset_meta[KEY_PARAMETERS] = ver_meta[KEY_PARAMETERS];
+		}
+		asset_meta[KEY_VERSION] = p_version;
+		set_metadata(p_asset_path, asset_meta);
 	}
 
 	// Update version index current_version.
@@ -651,6 +583,10 @@ Array AIAssetMetadata::list_versions(const String &p_asset_path) {
 		entry[KEY_VERSION] = ver;
 		entry[KEY_PROMPT] = ver_meta.get(KEY_PROMPT, "");
 		entry[KEY_MODEL] = ver_meta.get(KEY_MODEL, "");
+		entry[KEY_NEGATIVE_PROMPT] = ver_meta.get(KEY_NEGATIVE_PROMPT, "");
+		entry[KEY_PROVIDER] = ver_meta.get(KEY_PROVIDER, "");
+		entry[KEY_SEED] = ver_meta.get(KEY_SEED, -1);
+		entry[KEY_PARAMETERS] = ver_meta.get(KEY_PARAMETERS, Dictionary());
 		entry[KEY_GENERATED_AT] = ver_meta.get(KEY_GENERATED_AT, "");
 		entry["is_current"] = (ver == current);
 		entry["file_exists"] = FileAccess::exists(get_version_file_path(p_asset_path, ver));

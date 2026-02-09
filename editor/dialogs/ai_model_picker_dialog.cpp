@@ -29,9 +29,12 @@
 
 #include "ai_model_picker_dialog.h"
 
+#include "core/config/project_settings.h"
+#include "core/io/json.h"
 #include "editor/editor_string_names.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/split_container.h"
+#include "scene/main/http_request.h"
 
 void AIModelPickerDialog::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("model_selected", PropertyInfo(Variant::STRING, "provider"), PropertyInfo(Variant::STRING, "model")));
@@ -64,7 +67,7 @@ void AIModelPickerDialog::_create_ui() {
 
 	provider_tree = memnew(Tree);
 	provider_tree->set_hide_root(true);
-	provider_tree->set_v_size_flags(SIZE_EXPAND_FILL);
+	provider_tree->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	provider_tree->connect("item_selected", callable_mp(this, &AIModelPickerDialog::_on_provider_selected));
 	left_panel->add_child(provider_tree);
 
@@ -90,7 +93,7 @@ void AIModelPickerDialog::_create_ui() {
 
 	model_description = memnew(RichTextLabel);
 	model_description->set_use_bbcode(true);
-	model_description->set_v_size_flags(SIZE_EXPAND_FILL);
+	model_description->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	model_description->set_custom_minimum_size(Size2(0, 100));
 	right_panel->add_child(model_description);
 
@@ -102,100 +105,105 @@ void AIModelPickerDialog::_create_ui() {
 	set_ok_button_text(TTR("Select"));
 }
 
+Vector<String> AIModelPickerDialog::_get_headers() const {
+	Vector<String> headers;
+	headers.push_back("Content-Type: application/json");
+	headers.push_back("Accept: application/json");
+	String project_path = ProjectSettings::get_singleton()->get_resource_path();
+	headers.push_back("x-opencode-directory: " + ProjectSettings::get_singleton()->globalize_path(project_path));
+	return headers;
+}
+
 void AIModelPickerDialog::_load_providers() {
+	status_label->set_text(TTR("Loading models..."));
+	String url = service_url + "/ai-assets/models";
+	http_request->request(url, _get_headers());
+}
+
+void AIModelPickerDialog::_on_models_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	provider_tree->clear();
-	TreeItem *root = provider_tree->create_item();
-
-	// TODO: Fetch providers from OpenCode API
-	// For now, add hardcoded providers
-
-	// Meshy - 3D Models
-	TreeItem *meshy = provider_tree->create_item(root);
-	meshy->set_text(0, "Meshy AI");
-	meshy->set_metadata(0, "meshy");
-	meshy->set_tooltip_text(0, TTR("3D model generation"));
-
-	// Doubao - 2D Images
-	TreeItem *doubao = provider_tree->create_item(root);
-	doubao->set_text(0, "Doubao (Volcano)");
-	doubao->set_metadata(0, "doubao");
-	doubao->set_tooltip_text(0, TTR("2D image/texture generation"));
-
-	// Suno - Audio
-	TreeItem *suno = provider_tree->create_item(root);
-	suno->set_text(0, "Suno AI");
-	suno->set_metadata(0, "suno");
-	suno->set_tooltip_text(0, TTR("Audio/music generation"));
-
-	// Populate all_models with mock data
-	// TODO: Replace with API call
 	all_models.clear();
 
-	// Meshy models
-	ModelInfo meshy6;
-	meshy6.id = "meshy-6";
-	meshy6.name = "Meshy v6";
-	meshy6.provider_id = "meshy";
-	meshy6.provider_name = "Meshy AI";
-	meshy6.description = "Latest Meshy model with improved quality and faster generation. Supports text-to-3D and image-to-3D.";
-	meshy6.supported_types.push_back("model");
-	meshy6.supported_types.push_back("mesh");
-	meshy6.supported_types.push_back("scene");
-	meshy6.supported_transforms.push_back("img2model");
-	all_models.push_back(meshy6);
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		status_label->set_text(TTR("Failed to load models from server."));
+		return;
+	}
 
-	ModelInfo meshy5;
-	meshy5.id = "meshy-5";
-	meshy5.name = "Meshy v5";
-	meshy5.provider_id = "meshy";
-	meshy5.provider_name = "Meshy AI";
-	meshy5.description = "Previous generation Meshy model. Good balance of quality and speed.";
-	meshy5.supported_types.push_back("model");
-	meshy5.supported_types.push_back("mesh");
-	all_models.push_back(meshy5);
+	String response_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+	JSON json;
+	if (json.parse(response_str) != OK) {
+		status_label->set_text(TTR("Invalid response from server."));
+		return;
+	}
 
-	// Doubao models
-	ModelInfo seedream4;
-	seedream4.id = "seedream-v4";
-	seedream4.name = "Seedream v4";
-	seedream4.provider_id = "doubao";
-	seedream4.provider_name = "Doubao";
-	seedream4.description = "High-quality image generation up to 4K resolution. Supports multiple styles including photorealistic, anime, and pixel art.";
-	seedream4.supported_types.push_back("texture");
-	seedream4.supported_types.push_back("sprite");
-	seedream4.supported_transforms.push_back("upscale");
-	seedream4.supported_transforms.push_back("style_transfer");
-	seedream4.supported_transforms.push_back("variation");
-	all_models.push_back(seedream4);
+	// Response is Record<providerId, ModelInfo[]>
+	Dictionary models_by_provider = json.get_data();
+	TreeItem *root = provider_tree->create_item();
 
-	ModelInfo seedream3;
-	seedream3.id = "seedream-v3";
-	seedream3.name = "Seedream v3";
-	seedream3.provider_id = "doubao";
-	seedream3.provider_name = "Doubao";
-	seedream3.description = "Fast image generation with good quality. Ideal for rapid iteration.";
-	seedream3.supported_types.push_back("texture");
-	seedream3.supported_types.push_back("sprite");
-	all_models.push_back(seedream3);
+	Array provider_ids = models_by_provider.keys();
+	for (int p = 0; p < provider_ids.size(); p++) {
+		String provider_id = provider_ids[p];
+		Array models = models_by_provider[provider_id];
 
-	// Suno models
-	ModelInfo sunov5;
-	sunov5.id = "suno-v5";
-	sunov5.name = "Suno v5";
-	sunov5.provider_id = "suno";
-	sunov5.provider_name = "Suno AI";
-	sunov5.description = "Latest Suno model for music generation. Creates full songs with vocals and instrumentals.";
-	sunov5.supported_types.push_back("audio_music");
-	all_models.push_back(sunov5);
+		// Create provider tree item
+		TreeItem *provider_item = provider_tree->create_item(root);
+		provider_item->set_text(0, provider_id);
+		provider_item->set_metadata(0, provider_id);
 
-	ModelInfo sunosfx;
-	sunosfx.id = "suno-sfx";
-	sunosfx.name = "Suno SFX";
-	sunosfx.provider_id = "suno";
-	sunosfx.provider_name = "Suno AI";
-	sunosfx.description = "Specialized model for sound effects generation. Creates short audio clips for game events.";
-	sunosfx.supported_types.push_back("audio_sfx");
-	all_models.push_back(sunosfx);
+		// Parse models for this provider
+		for (int m = 0; m < models.size(); m++) {
+			Dictionary model_dict = models[m];
+			ModelInfo info;
+			info.id = model_dict.get("id", "");
+			info.name = model_dict.get("name", info.id);
+			info.provider_id = provider_id;
+			info.provider_name = provider_id;
+			info.description = model_dict.get("description", "");
+
+			Array types = model_dict.get("supportedTypes", Array());
+			for (int t = 0; t < types.size(); t++) {
+				info.supported_types.push_back(types[t]);
+			}
+
+			Array transforms = model_dict.get("supportedTransforms", Array());
+			for (int t = 0; t < transforms.size(); t++) {
+				info.supported_transforms.push_back(transforms[t]);
+			}
+
+			if (model_dict.has("pricing")) {
+				Dictionary pricing = model_dict["pricing"];
+				info.cost = (double)pricing.get("cost", 0.0);
+			}
+
+			// Use provider name from first model if available
+			if (model_dict.has("providerName")) {
+				provider_item->set_text(0, model_dict["providerName"]);
+				info.provider_name = model_dict["providerName"];
+			}
+
+			all_models.push_back(info);
+		}
+	}
+
+	status_label->set_text("");
+
+	// Auto-select provider
+	if (!selected_provider.is_empty()) {
+		TreeItem *child = root->get_first_child();
+		while (child) {
+			if (String(child->get_metadata(0)) == selected_provider) {
+				child->select(0);
+				break;
+			}
+			child = child->get_next();
+		}
+	} else if (root->get_first_child()) {
+		TreeItem *first = root->get_first_child();
+		first->select(0);
+		selected_provider = first->get_metadata(0);
+	}
+
+	_load_models_for_provider(selected_provider);
 }
 
 void AIModelPickerDialog::_load_models_for_provider(const String &p_provider) {
@@ -220,7 +228,11 @@ void AIModelPickerDialog::_load_models_for_provider(const String &p_provider) {
 			}
 
 			filtered_models.push_back(model);
-			model_list->add_item(model.name);
+			String label = model.name;
+			if (model.cost > 0) {
+				label = vformat("%s ($%s)", model.name, String::num(model.cost, model.cost < 0.01 ? 4 : 3));
+			}
+			model_list->add_item(label);
 
 			// Mark current selection
 			if (model.id == selected_model) {
@@ -298,46 +310,24 @@ void AIModelPickerDialog::setup(const String &p_filter_type, const String &p_cur
 	selected_model = p_current_model;
 	selected_provider = "";
 
-	_load_providers();
-
-	// Select provider based on current model
+	// Try to pre-select provider from cached models
 	if (!p_current_model.is_empty()) {
-		for (const ModelInfo &model : all_models) {
-			if (model.id == p_current_model) {
-				selected_provider = model.provider_id;
+		for (const ModelInfo &mi : all_models) {
+			if (mi.id == p_current_model) {
+				selected_provider = mi.provider_id;
 				break;
 			}
 		}
 	}
 
-	// Select first provider if none selected
-	if (selected_provider.is_empty()) {
-		TreeItem *root = provider_tree->get_root();
-		if (root && root->get_first_child()) {
-			TreeItem *first = root->get_first_child();
-			first->select(0);
-			selected_provider = first->get_metadata(0);
-		}
-	} else {
-		// Find and select the provider in tree
-		TreeItem *root = provider_tree->get_root();
-		if (root) {
-			TreeItem *child = root->get_first_child();
-			while (child) {
-				if (String(child->get_metadata(0)) == selected_provider) {
-					child->select(0);
-					break;
-				}
-				child = child->get_next();
-			}
-		}
-	}
-
-	_load_models_for_provider(selected_provider);
-
-	status_label->set_text("");
+	// Fetch latest from API (callback handles provider/model selection)
+	_load_providers();
 }
 
 AIModelPickerDialog::AIModelPickerDialog() {
 	_create_ui();
+
+	http_request = memnew(HTTPRequest);
+	add_child(http_request);
+	http_request->connect("request_completed", callable_mp(this, &AIModelPickerDialog::_on_models_received));
 }

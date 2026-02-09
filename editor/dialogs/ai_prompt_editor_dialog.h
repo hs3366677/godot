@@ -33,11 +33,14 @@
 #include "scene/gui/dialogs.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/check_box.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/option_button.h"
 #include "scene/gui/spin_box.h"
 #include "scene/gui/text_edit.h"
+
+class HTTPRequest;
 
 class AIPromptEditorDialog : public ConfirmationDialog {
 	GDCLASS(AIPromptEditorDialog, ConfirmationDialog);
@@ -74,6 +77,9 @@ private:
 	SpinBox *seed_spinbox = nullptr;
 	Button *random_seed_button = nullptr;
 
+	// Post-processing options
+	CheckBox *transparent_bg_checkbox = nullptr;
+
 	// Version info
 	Label *version_label = nullptr;
 
@@ -81,9 +87,17 @@ private:
 	Label *status_label = nullptr;
 	bool is_processing = false;
 
+	// HTTP
+	String service_url = "http://localhost:4096";
+	HTTPRequest *refine_request = nullptr;
+	HTTPRequest *models_request = nullptr;
+	Vector<String> _get_headers() const;
+
 	void _create_ui();
 	void _load_models();
 	void _on_refine_pressed();
+	void _on_refine_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_models_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_random_seed_pressed();
 	void _on_confirmed();
 	void _update_version_preview();
@@ -95,10 +109,12 @@ protected:
 public:
 	void setup_for_asset(const String &p_path, Mode p_mode = MODE_REGENERATE);
 
+	String get_asset_path() const { return asset_path; }
 	String get_prompt() const;
 	String get_negative_prompt() const;
 	String get_selected_model() const;
 	int get_seed() const;
+	bool get_transparent_bg() const;
 
 	AIPromptEditorDialog();
 };

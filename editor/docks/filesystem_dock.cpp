@@ -32,6 +32,8 @@
 
 #include "core/config/project_settings.h"
 #include "core/io/ai_asset_metadata.h"
+#include "editor/ai_asset_generation_manager.h"
+#include "editor/dialogs/ai_prompt_editor_dialog.h"
 #include "core/io/dir_access.h"
 #include "core/io/json.h"
 #include "core/io/file_access.h"
@@ -2764,16 +2766,18 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 		} break;
 
 		case FILE_MENU_AI_GENERATE_PLACEHOLDER: {
-			if (p_selected.size() == 1) {
-				// TODO: Call OpenCode API to generate asset from placeholder metadata
-				print_line(vformat("TODO: Generate from placeholder: %s", p_selected[0]));
+			if (p_selected.size() == 1 && AIAssetGenerationManager::get_singleton()) {
+				AIAssetGenerationManager::get_singleton()->generate_from_placeholder(p_selected[0]);
 			}
 		} break;
 
 		case FILE_MENU_AI_EDIT_PROMPT: {
-			if (p_selected.size() == 1) {
-				// TODO: Open prompt editor dialog
-				print_line(vformat("TODO: Open prompt editor for: %s", p_selected[0]));
+			if (p_selected.size() == 1 && AIAssetGenerationManager::get_singleton()) {
+				AIAssetMetadata::Origin file_origin = AIAssetMetadata::get_origin(p_selected[0]);
+				AIPromptEditorDialog::Mode mode = (file_origin == AIAssetMetadata::ORIGIN_PLACEHOLDER)
+						? AIPromptEditorDialog::MODE_GENERATE
+						: AIPromptEditorDialog::MODE_REGENERATE;
+				AIAssetGenerationManager::get_singleton()->open_prompt_editor(p_selected[0], mode);
 			}
 		} break;
 
@@ -2788,16 +2792,15 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 		} break;
 
 		case FILE_MENU_AI_QUICK_REGENERATE: {
-			if (p_selected.size() == 1) {
-				// TODO: Call OpenCode API to regenerate with new seed
-				print_line(vformat("TODO: Quick regenerate: %s", p_selected[0]));
+			if (p_selected.size() == 1 && AIAssetGenerationManager::get_singleton()) {
+				AIAssetGenerationManager::get_singleton()->quick_regenerate(p_selected[0]);
 			}
 		} break;
 
 		case FILE_MENU_AI_REGENERATE_BUNDLE: {
-			if (p_selected.size() == 1) {
-				// TODO: Regenerate all assets in the bundle
-				print_line(vformat("TODO: Regenerate bundle for: %s", p_selected[0]));
+			if (p_selected.size() == 1 && AIAssetGenerationManager::get_singleton()) {
+				// Bundle regeneration reuses the same generate flow for now
+				AIAssetGenerationManager::get_singleton()->generate_from_placeholder(p_selected[0]);
 			}
 		} break;
 
@@ -2822,9 +2825,9 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 		} break;
 
 		case FILE_MENU_AI_CHANGE_MODEL: {
-			if (p_selected.size() == 1) {
-				// TODO: Open model picker dialog
-				print_line(vformat("TODO: Open model picker for: %s", p_selected[0]));
+			if (p_selected.size() == 1 && AIAssetGenerationManager::get_singleton()) {
+				// Open prompt editor in regenerate mode (allows model change)
+				AIAssetGenerationManager::get_singleton()->open_prompt_editor(p_selected[0], AIPromptEditorDialog::MODE_REGENERATE);
 			}
 		} break;
 
@@ -2846,9 +2849,9 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 		} break;
 
 		case FILE_MENU_AI_GENERATE_VARIATIONS: {
-			if (p_selected.size() == 1) {
-				// TODO: Generate AI variations of the asset
-				print_line(vformat("TODO: Generate variations for: %s", p_selected[0]));
+			if (p_selected.size() == 1 && AIAssetGenerationManager::get_singleton()) {
+				// Variations use the transform dialog
+				AIAssetGenerationManager::get_singleton()->open_enhance_dialog(p_selected[0]);
 			}
 		} break;
 
@@ -2863,9 +2866,8 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 		} break;
 
 		case FILE_MENU_AI_RETRANSFORM: {
-			if (p_selected.size() == 1) {
-				// TODO: Re-run the transform on the source asset
-				print_line(vformat("TODO: Re-transform: %s", p_selected[0]));
+			if (p_selected.size() == 1 && AIAssetGenerationManager::get_singleton()) {
+				AIAssetGenerationManager::get_singleton()->open_enhance_dialog(p_selected[0]);
 			}
 		} break;
 
