@@ -434,32 +434,27 @@ void AIAssetGenerationManager::_on_file_completed(int p_result, int p_code, cons
 	_download_next_file();
 }
 
+void AIAssetGenerationManager::post_process_asset(const String &p_path) {
+	String saved = current_asset_path;
+	current_asset_path = p_path;
+	_post_process_asset();
+	current_asset_path = saved;
+}
+
 void AIAssetGenerationManager::_post_process_asset() {
 	// Post-process the active asset file (crop, bg removal, resize).
 	// The raw file has already been saved to version history; this only modifies the working copy.
 	Dictionary asset_meta = AIAssetMetadata::get_metadata(current_asset_path);
 	Dictionary meta_params = asset_meta.get(AIAssetMetadata::KEY_PARAMETERS, Dictionary());
-	String size_str = meta_params.get("size", "");
-	if (size_str.is_empty()) {
-		return;
-	}
-
-	Vector<String> parts = size_str.split("x");
-	if (parts.size() != 2) {
-		return;
-	}
-	int target_w = parts[0].to_int();
-	int target_h = parts[1].to_int();
-	if (target_w <= 0 || target_h <= 0) {
-		return;
-	}
 
 	String global_path = ProjectSettings::get_singleton()->globalize_path(current_asset_path);
 	Ref<Image> img;
 	img.instantiate();
 	if (img->load(global_path) != OK) {
-		return;
+		return; // Not an image (e.g. .glb) — skip all post-processing.
 	}
+
+	bool modified = false;
 
 	// Step 0: Convert white/near-white background to transparent (if enabled)
 	bool transparent_bg = meta_params.get("transparent_bg", false);
@@ -476,32 +471,66 @@ void AIAssetGenerationManager::_post_process_asset() {
 			}
 		}
 		print_line("AI Asset: converted white background to transparent");
+		modified = true;
 	}
 
-	// Step 1: Auto-crop blank borders
-	int left = img->get_width(), top = img->get_height(), right = 0, bottom = 0;
-	for (int y = 0; y < img->get_height(); y++) {
-		for (int x = 0; x < img->get_width(); x++) {
-			Color c = img->get_pixel(x, y);
-			if (c.a > 0.1f) {
-				left = MIN(left, x);
-				top = MIN(top, y);
-				right = MAX(right, x);
-				bottom = MAX(bottom, y);
+	// Step 1+2: Crop and resize (only if size is specified)
+	String size_str = meta_params.get("size", "");
+	Vector<String> parts = size_str.split("x");
+	if (parts.size() == 2) {
+		int target_w = parts[0].to_int();
+		int target_h = parts[1].to_int();
+		if (target_w > 0 && target_h > 0) {
+			// Auto-crop blank borders
+			int left = img->get_width(), top = img->get_height(), right = 0, bottom = 0;
+			for (int y = 0; y < img->get_height(); y++) {
+				for (int x = 0; x < img->get_width(); x++) {
+					Color c = img->get_pixel(x, y);
+					if (c.a > 0.1f) {
+						left = MIN(left, x);
+						top = MIN(top, y);
+						right = MAX(right, x);
+						bottom = MAX(bottom, y);
+					}
+				}
 			}
+
+			// Crop and resize to target dimensions
+			if (right >= left && bottom >= top) {
+				Ref<Image> cropped = img->get_region(Rect2i(left, top, right - left + 1, bottom - top + 1));
+				cropped->resize(target_w, target_h, Image::INTERPOLATE_NEAREST);
+				cropped->save_png(global_path);
+			} else {
+				img->resize(target_w, target_h, Image::INTERPOLATE_NEAREST);
+				img->save_png(global_path);
+			}
+			print_line(vformat("AI Asset: cropped and resized to %dx%d", target_w, target_h));
+			return;
 		}
 	}
 
-	// Step 2: Crop and resize to target dimensions
-	if (right >= left && bottom >= top) {
-		Ref<Image> cropped = img->get_region(Rect2i(left, top, right - left + 1, bottom - top + 1));
-		cropped->resize(target_w, target_h, Image::INTERPOLATE_NEAREST);
-		cropped->save_png(global_path);
-	} else {
-		img->resize(target_w, target_h, Image::INTERPOLATE_NEAREST);
-		img->save_png(global_path);
+	// Transparent BG without size: auto-crop to solid pixels and save
+	if (modified) {
+		int left = img->get_width(), top = img->get_height(), right = 0, bottom = 0;
+		for (int y = 0; y < img->get_height(); y++) {
+			for (int x = 0; x < img->get_width(); x++) {
+				Color c = img->get_pixel(x, y);
+				if (c.a > 0.1f) {
+					left = MIN(left, x);
+					top = MIN(top, y);
+					right = MAX(right, x);
+					bottom = MAX(bottom, y);
+				}
+			}
+		}
+		if (right >= left && bottom >= top) {
+			Ref<Image> cropped = img->get_region(Rect2i(left, top, right - left + 1, bottom - top + 1));
+			cropped->save_png(global_path);
+			print_line(vformat("AI Asset: cropped to solid pixels %dx%d", right - left + 1, bottom - top + 1));
+		} else {
+			img->save_png(global_path);
+		}
 	}
-	print_line(vformat("AI Asset: cropped and resized to %dx%d", target_w, target_h));
 }
 
 void AIAssetGenerationManager::_finish_generation(bool p_success, const String &p_message) {

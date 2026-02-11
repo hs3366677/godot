@@ -37,6 +37,7 @@
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/file_system/editor_file_system.h"
+#include "scene/gui/file_dialog.h"
 #include "scene/gui/separator.h"
 #include "scene/main/http_request.h"
 
@@ -239,6 +240,18 @@ void AIAssetInfoControl::_create_ui() {
 	view_source_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_view_source_pressed));
 	buttons_container->add_child(view_source_button);
 
+	replace_file_button = memnew(Button);
+	replace_file_button->set_text(TTR("Replace with File..."));
+	replace_file_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_replace_file_pressed));
+	buttons_container->add_child(replace_file_button);
+
+	replace_file_dialog = memnew(FileDialog);
+	replace_file_dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILE);
+	replace_file_dialog->set_access(FileDialog::ACCESS_FILESYSTEM);
+	replace_file_dialog->set_title(TTR("Replace with File"));
+	replace_file_dialog->connect("file_selected", callable_mp(this, &AIAssetInfoControl::_on_replace_file_selected));
+	add_child(replace_file_dialog);
+
 	// 10. Status label
 	status_label = memnew(Label);
 	status_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
@@ -382,11 +395,17 @@ void AIAssetInfoControl::_update_ui() {
 	ai_assist_container->set_visible(has_prompt);
 	seed_container->set_visible(has_prompt);
 
+	// Hide transparent BG for 3D model assets (only relevant for 2D textures)
+	String asset_type = metadata.get(AIAssetMetadata::KEY_ASSET_TYPE, "");
+	bool is_3d = (asset_type == "model" || asset_type == "mesh" || asset_type == "scene" || asset_path.ends_with(".glb"));
+	transparent_bg_checkbox->set_visible(!is_3d);
+
 	// Show/hide action buttons based on origin
 	generate_button->set_visible(origin == AIAssetMetadata::ORIGIN_PLACEHOLDER);
 	quick_regen_button->set_visible(origin == AIAssetMetadata::ORIGIN_GENERATED);
 	enhance_button->set_visible(origin == AIAssetMetadata::ORIGIN_IMPORTED);
 	view_source_button->set_visible(origin == AIAssetMetadata::ORIGIN_HYBRID);
+	replace_file_button->set_visible(origin == AIAssetMetadata::ORIGIN_PLACEHOLDER || origin == AIAssetMetadata::ORIGIN_GENERATED);
 
 	// Reset history view state
 	is_viewing_history = false;
@@ -511,11 +530,16 @@ void AIAssetInfoControl::_on_models_received(int p_result, int p_code, const Pac
 
 	Dictionary models_by_provider = data;
 	String current_model = metadata.get(AIAssetMetadata::KEY_MODEL, "");
+	String asset_provider = metadata.get(AIAssetMetadata::KEY_PROVIDER, "");
 	int select_idx = -1;
 
 	Array provider_ids = models_by_provider.keys();
 	for (int p = 0; p < provider_ids.size(); p++) {
 		String provider_id = provider_ids[p];
+		// Only show models from the asset's provider.
+		if (!asset_provider.is_empty() && provider_id != asset_provider) {
+			continue;
+		}
 		Variant provider_val = models_by_provider[provider_id];
 		if (provider_val.get_type() != Variant::ARRAY) {
 			continue;
@@ -619,9 +643,10 @@ void AIAssetInfoControl::_update_history_list() {
 	history_list->clear();
 
 	Array versions = AIAssetMetadata::list_versions(asset_path);
-	bool is_generated = (origin == AIAssetMetadata::ORIGIN_GENERATED ||
-			origin == AIAssetMetadata::ORIGIN_HYBRID);
-	history_container->set_visible(is_generated && versions.size() > 0);
+	bool has_history = (origin == AIAssetMetadata::ORIGIN_GENERATED ||
+			origin == AIAssetMetadata::ORIGIN_HYBRID ||
+			origin == AIAssetMetadata::ORIGIN_IMPORTED);
+	history_container->set_visible(has_history && versions.size() > 0);
 
 	if (versions.size() == 0) {
 		return;
@@ -631,15 +656,29 @@ void AIAssetInfoControl::_update_history_list() {
 		Dictionary entry = versions[i];
 		int ver = (int)entry.get(AIAssetMetadata::KEY_VERSION, 0);
 		String ver_prompt = entry.get(AIAssetMetadata::KEY_PROMPT, "");
+		String ver_origin = entry.get(AIAssetMetadata::KEY_ORIGIN, "");
 		bool is_current = (bool)entry.get("is_current", false);
 		bool file_exists = (bool)entry.get("file_exists", false);
+
+		// For imported versions with no prompt, show the source filename instead.
+		if (ver_prompt.is_empty() && ver_origin == "imported") {
+			ver_prompt = entry.get(AIAssetMetadata::KEY_ORIGINAL_FILENAME, "(manual import)");
+			if (ver_prompt.is_empty()) {
+				ver_prompt = "(manual import)";
+			}
+		}
+
+		String origin_tag;
+		if (ver_origin == "imported") {
+			origin_tag = " [Manual]";
+		}
 
 		String truncated = ver_prompt.length() > 40 ? ver_prompt.left(40) + "..." : ver_prompt;
 		String label;
 		if (is_current) {
-			label = vformat(U"\u2605 v%d \u2014 %s", ver, truncated);
+			label = vformat(U"\u2605 v%d%s \u2014 %s", ver, origin_tag, truncated);
 		} else {
-			label = vformat(U"   v%d \u2014 %s", ver, truncated);
+			label = vformat(U"   v%d%s \u2014 %s", ver, origin_tag, truncated);
 		}
 
 		int idx = history_list->get_item_count();
@@ -698,7 +737,45 @@ void AIAssetInfoControl::_on_view_source_pressed() {
 }
 
 void AIAssetInfoControl::_on_random_seed_pressed() {
-	seed_spinbox->set_value(-1);
+	seed_spinbox->set_value(Math::rand() % 999999999);
+}
+
+void AIAssetInfoControl::_on_replace_file_pressed() {
+	replace_file_dialog->clear_filters();
+	String asset_type = metadata.get(AIAssetMetadata::KEY_ASSET_TYPE, "");
+	if (asset_type == "model" || asset_type == "mesh" || asset_type == "scene" || asset_path.ends_with(".glb")) {
+		replace_file_dialog->add_filter("*.glb, *.gltf", TTR("3D Models"));
+	} else {
+		replace_file_dialog->add_filter("*.png, *.jpg, *.jpeg, *.webp", TTR("Images"));
+	}
+	replace_file_dialog->popup_centered(Size2(600, 400));
+}
+
+void AIAssetInfoControl::_on_replace_file_selected(const String &p_path) {
+	// Save current as version before replacing.
+	AIAssetMetadata::save_version(asset_path);
+
+	// Copy source file to destination.
+	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+	String global_dest = ProjectSettings::get_singleton()->globalize_path(asset_path);
+	da->copy(p_path, global_dest);
+
+	// Update metadata: origin → IMPORTED, preserve prompt/provider, add import info.
+	Dictionary meta = AIAssetMetadata::get_metadata(asset_path);
+	meta[AIAssetMetadata::KEY_ORIGIN] = AIAssetMetadata::origin_to_string(AIAssetMetadata::ORIGIN_IMPORTED);
+	meta[AIAssetMetadata::KEY_IMPORTED_FROM] = p_path;
+	meta[AIAssetMetadata::KEY_IMPORTED_AT] = AIAssetMetadata::get_current_timestamp();
+	meta[AIAssetMetadata::KEY_ORIGINAL_FILENAME] = p_path.get_file();
+	int new_version = (int)meta.get(AIAssetMetadata::KEY_VERSION, 0) + 1;
+	meta[AIAssetMetadata::KEY_VERSION] = new_version;
+	AIAssetMetadata::set_metadata(asset_path, meta);
+
+	// Save the imported version too (so it appears in history).
+	AIAssetMetadata::save_version(asset_path);
+
+	// Refresh.
+	EditorFileSystem::get_singleton()->scan_changes();
+	set_asset_path(asset_path);
 }
 
 void AIAssetInfoControl::_on_history_item_selected(int p_index) {
@@ -743,6 +820,11 @@ void AIAssetInfoControl::_on_use_version_pressed() {
 	if (err != OK) {
 		ERR_PRINT(vformat("Failed to use version %d of %s", version, asset_path));
 		return;
+	}
+
+	// Re-apply post-processing settings (transparent BG, crop, resize)
+	if (AIAssetGenerationManager::get_singleton()) {
+		AIAssetGenerationManager::get_singleton()->post_process_asset(asset_path);
 	}
 
 	EditorFileSystem::get_singleton()->scan_changes();

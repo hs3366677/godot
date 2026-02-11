@@ -35,8 +35,8 @@
 #include "editor/ai_asset_generation_manager.h"
 #include "editor/dialogs/ai_prompt_editor_dialog.h"
 #include "core/io/dir_access.h"
-#include "core/io/json.h"
 #include "core/io/file_access.h"
+#include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/os/keyboard.h"
 #include "core/os/os.h"
@@ -65,6 +65,7 @@
 #include "editor/themes/editor_scale.h"
 #include "editor/themes/editor_theme_manager.h"
 #include "scene/gui/box_container.h"
+#include "scene/gui/file_dialog.h"
 #include "scene/gui/item_list.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
@@ -722,6 +723,16 @@ void FileSystemDock::_tree_multi_selected(Object *p_item, int p_column, bool p_s
 	// Update the file list.
 	if (!updating_tree && display_mode != DISPLAY_MODE_TREE_ONLY) {
 		_update_file_list(false);
+	}
+
+	// Push AI assets to the inspector so the AI info panel is shown.
+	if (!current_path.ends_with("/") && current_path != "Favorites") {
+		if (AIAssetMetadata::get_origin(current_path) != AIAssetMetadata::ORIGIN_UNKNOWN) {
+			Ref<Resource> res = ResourceLoader::load(current_path);
+			if (res.is_valid()) {
+				EditorNode::get_singleton()->push_item(res.ptr());
+			}
+		}
 	}
 }
 
@@ -2871,6 +2882,29 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 			}
 		} break;
 
+		case FILE_MENU_AI_REPLACE_WITH_FILE: {
+			if (p_selected.size() == 1) {
+				ai_replace_target_path = p_selected[0];
+				if (!ai_replace_file_dialog) {
+					ai_replace_file_dialog = memnew(FileDialog);
+					ai_replace_file_dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILE);
+					ai_replace_file_dialog->set_access(FileDialog::ACCESS_FILESYSTEM);
+					ai_replace_file_dialog->set_title(TTR("Replace with File"));
+					ai_replace_file_dialog->connect("file_selected", callable_mp(this, &FileSystemDock::_on_ai_replace_file_selected));
+					add_child(ai_replace_file_dialog);
+				}
+				ai_replace_file_dialog->clear_filters();
+				Dictionary ai_meta = AIAssetMetadata::get_metadata(ai_replace_target_path);
+				String asset_type = ai_meta.get(AIAssetMetadata::KEY_ASSET_TYPE, "");
+				if (asset_type == "model" || asset_type == "mesh" || asset_type == "scene" || ai_replace_target_path.ends_with(".glb")) {
+					ai_replace_file_dialog->add_filter("*.glb, *.gltf", TTR("3D Models"));
+				} else {
+					ai_replace_file_dialog->add_filter("*.png, *.jpg, *.jpeg, *.webp", TTR("Images"));
+				}
+				ai_replace_file_dialog->popup_centered(Size2(600, 400));
+			}
+		} break;
+
 		case EXTRA_FOCUS_PATH: {
 			focus_on_filter();
 		} break;
@@ -2910,6 +2944,37 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 			break;
 		}
 	}
+}
+
+void FileSystemDock::_on_ai_replace_file_selected(const String &p_path) {
+	if (ai_replace_target_path.is_empty()) {
+		return;
+	}
+
+	// Save current as version before replacing.
+	AIAssetMetadata::save_version(ai_replace_target_path);
+
+	// Copy source file to destination.
+	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+	String global_dest = ProjectSettings::get_singleton()->globalize_path(ai_replace_target_path);
+	da->copy(p_path, global_dest);
+
+	// Update metadata: origin → IMPORTED, preserve prompt/provider, add import info.
+	Dictionary meta = AIAssetMetadata::get_metadata(ai_replace_target_path);
+	meta[AIAssetMetadata::KEY_ORIGIN] = AIAssetMetadata::origin_to_string(AIAssetMetadata::ORIGIN_IMPORTED);
+	meta[AIAssetMetadata::KEY_IMPORTED_FROM] = p_path;
+	meta[AIAssetMetadata::KEY_IMPORTED_AT] = AIAssetMetadata::get_current_timestamp();
+	meta[AIAssetMetadata::KEY_ORIGINAL_FILENAME] = p_path.get_file();
+	int new_version = (int)meta.get(AIAssetMetadata::KEY_VERSION, 0) + 1;
+	meta[AIAssetMetadata::KEY_VERSION] = new_version;
+	AIAssetMetadata::set_metadata(ai_replace_target_path, meta);
+
+	// Save the imported version too (so it appears in history).
+	AIAssetMetadata::save_version(ai_replace_target_path);
+
+	// Refresh.
+	EditorFileSystem::get_singleton()->scan_changes();
+	ai_replace_target_path = "";
 }
 
 int FileSystemDock::_get_menu_option_from_key(const Ref<InputEventKey> &p_key) {
@@ -3832,6 +3897,7 @@ void FileSystemDock::_file_and_folders_fill_popup(PopupMenu *p_popup, const Vect
 					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Play")), TTRC("Generate from Placeholder"), FILE_MENU_AI_GENERATE_PLACEHOLDER);
 					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Edit")), TTRC("Edit Prompt & Generate..."), FILE_MENU_AI_EDIT_PROMPT);
 					p_popup->add_item(TTRC("Copy Prompt"), FILE_MENU_AI_COPY_PROMPT);
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Load")), TTRC("Replace with File..."), FILE_MENU_AI_REPLACE_WITH_FILE);
 				} break;
 				case AIAssetMetadata::ORIGIN_IMPORTED: {
 					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Shader")), TTRC("AI Enhance..."), FILE_MENU_AI_ENHANCE);
@@ -3848,6 +3914,7 @@ void FileSystemDock::_file_and_folders_fill_popup(PopupMenu *p_popup, const Vect
 					if (!bundle_members.is_empty()) {
 						p_popup->add_icon_item(get_editor_theme_icon(SNAME("ReloadSmall")), TTRC("Regenerate Bundle"), FILE_MENU_AI_REGENERATE_BUNDLE);
 					}
+					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Load")), TTRC("Replace with File..."), FILE_MENU_AI_REPLACE_WITH_FILE);
 				} break;
 				case AIAssetMetadata::ORIGIN_HYBRID: {
 					p_popup->add_icon_item(get_editor_theme_icon(SNAME("Edit")), TTRC("Edit Prompt & Re-transform..."), FILE_MENU_AI_EDIT_PROMPT);
@@ -4015,6 +4082,17 @@ void FileSystemDock::_file_multi_selected(int p_index, bool p_selected) {
 	// Update the import dock.
 	import_dock_needs_update = true;
 	callable_mp(this, &FileSystemDock::_update_import_dock).call_deferred();
+
+	// Push AI assets to the inspector so the AI info panel is shown.
+	if (p_selected) {
+		String fpath = files->get_item_metadata(p_index);
+		if (!fpath.ends_with("/") && AIAssetMetadata::get_origin(fpath) != AIAssetMetadata::ORIGIN_UNKNOWN) {
+			Ref<Resource> res = ResourceLoader::load(fpath);
+			if (res.is_valid()) {
+				EditorNode::get_singleton()->push_item(res.ptr());
+			}
+		}
+	}
 }
 
 void FileSystemDock::_update_selection_changed() {

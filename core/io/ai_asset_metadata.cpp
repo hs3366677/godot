@@ -441,6 +441,7 @@ Error AIAssetMetadata::save_version(const String &p_asset_path) {
 	// Write per-version metadata (vN.json).
 	Dictionary ver_meta;
 	ver_meta[KEY_VERSION] = version;
+	ver_meta[KEY_ORIGIN] = meta.get(KEY_ORIGIN, "");
 	ver_meta[KEY_PROMPT] = meta.get(KEY_PROMPT, "");
 	ver_meta[KEY_NEGATIVE_PROMPT] = meta.get(KEY_NEGATIVE_PROMPT, "");
 	ver_meta[KEY_PROVIDER] = meta.get(KEY_PROVIDER, "");
@@ -448,6 +449,8 @@ Error AIAssetMetadata::save_version(const String &p_asset_path) {
 	ver_meta[KEY_SEED] = meta.get(KEY_SEED, -1);
 	ver_meta[KEY_PARAMETERS] = meta.get(KEY_PARAMETERS, Dictionary());
 	ver_meta[KEY_GENERATED_AT] = meta.get(KEY_GENERATED_AT, get_current_timestamp());
+	ver_meta[KEY_ORIGINAL_FILENAME] = meta.get(KEY_ORIGINAL_FILENAME, "");
+	ver_meta[KEY_IMPORTED_FROM] = meta.get(KEY_IMPORTED_FROM, "");
 
 	err = _write_json_file(get_version_meta_path(p_asset_path, version), ver_meta);
 	if (err != OK) {
@@ -581,6 +584,7 @@ Array AIAssetMetadata::list_versions(const String &p_asset_path) {
 
 		Dictionary entry;
 		entry[KEY_VERSION] = ver;
+		entry[KEY_ORIGIN] = ver_meta.get(KEY_ORIGIN, "");
 		entry[KEY_PROMPT] = ver_meta.get(KEY_PROMPT, "");
 		entry[KEY_MODEL] = ver_meta.get(KEY_MODEL, "");
 		entry[KEY_NEGATIVE_PROMPT] = ver_meta.get(KEY_NEGATIVE_PROMPT, "");
@@ -588,6 +592,7 @@ Array AIAssetMetadata::list_versions(const String &p_asset_path) {
 		entry[KEY_SEED] = ver_meta.get(KEY_SEED, -1);
 		entry[KEY_PARAMETERS] = ver_meta.get(KEY_PARAMETERS, Dictionary());
 		entry[KEY_GENERATED_AT] = ver_meta.get(KEY_GENERATED_AT, "");
+		entry[KEY_ORIGINAL_FILENAME] = ver_meta.get(KEY_ORIGINAL_FILENAME, "");
 		entry["is_current"] = (ver == current);
 		entry["file_exists"] = FileAccess::exists(get_version_file_path(p_asset_path, ver));
 

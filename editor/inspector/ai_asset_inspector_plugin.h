@@ -41,6 +41,7 @@
 #include "scene/gui/spin_box.h"
 #include "scene/gui/text_edit.h"
 
+class FileDialog;
 class HTTPRequest;
 
 class AIAssetInspectorPlugin : public EditorInspectorPlugin {
@@ -102,6 +103,8 @@ private:
 	Button *quick_regen_button = nullptr;
 	Button *enhance_button = nullptr;
 	Button *view_source_button = nullptr;
+	Button *replace_file_button = nullptr;
+	FileDialog *replace_file_dialog = nullptr;
 
 	// Status
 	Label *status_label = nullptr;
@@ -146,6 +149,8 @@ private:
 	void _on_enhance_pressed();
 	void _on_view_source_pressed();
 	void _on_random_seed_pressed();
+	void _on_replace_file_pressed();
+	void _on_replace_file_selected(const String &p_path);
 
 	// History handlers
 	void _on_history_item_selected(int p_index);

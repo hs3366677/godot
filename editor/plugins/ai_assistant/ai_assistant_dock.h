@@ -22,10 +22,16 @@
 #include "scene/gui/text_edit.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/dialogs.h"
+#include "scene/gui/panel_container.h"
+#include "scene/gui/texture_rect.h"
 #include "scene/main/http_request.h"
 #include "scene/main/timer.h"
 
+#include "core/crypto/crypto_core.h"
 #include "core/io/json.h"
+#include "scene/resources/image_texture.h"
+
+class EditorFileDialog;
 
 class AIAssistantDock : public EditorDock {
 	GDCLASS(AIAssistantDock, EditorDock);
@@ -69,6 +75,14 @@ public:
 		}
 	};
 
+	struct AttachmentInfo {
+		String file_path;
+		String filename;
+		String mime_type;
+		Vector<uint8_t> data;
+		Ref<ImageTexture> thumbnail;
+	};
+
 private:
 	// Main container
 	VBoxContainer *main_container = nullptr;
@@ -89,9 +103,13 @@ private:
 	// Settings dialog (asset provider configuration)
 	AcceptDialog *settings_dialog = nullptr;
 	LineEdit *replicate_token_input = nullptr;
-	Button *settings_test_button = nullptr;
-	Label *settings_status_label = nullptr;
+	Button *replicate_test_button = nullptr;
+	Label *replicate_status_label = nullptr;
+	LineEdit *meshy_token_input = nullptr;
+	Button *meshy_test_button = nullptr;
+	Label *meshy_status_label = nullptr;
 	HTTPRequest *settings_http_request = nullptr;
+	String settings_testing_provider;
 
 	// Model selector (two-level submenu: Provider → Models)
 	MenuButton *model_button = nullptr;
@@ -129,11 +147,32 @@ private:
 	CheckButton *plan_mode_toggle = nullptr;
 	CheckButton *auto_accept_toggle = nullptr;
 
+	// Collapse/expand for AI response turns
+	Vector<int> user_message_indices; // child indices in chat_container for each user message
+	HashMap<int, Button *> collapse_buttons; // user_msg_index → collapse button
+	HashMap<int, bool> collapsed_turns; // user_msg_index → is collapsed
+	HashMap<int, String> user_message_texts; // user_msg_index → display text for sticky header
+
+	// Sticky header — pins current user question at top of scroll
+	PanelContainer *sticky_header = nullptr;
+	Button *sticky_collapse_btn = nullptr;
+	RichTextLabel *sticky_text_label = nullptr;
+	int sticky_current_turn_index = -1; // which user_msg_index is currently shown
+
 	VBoxContainer *input_container = nullptr;
 	HBoxContainer *button_container = nullptr;
 	TextEdit *prompt_input = nullptr;
 	Button *send_button = nullptr;
 	Button *stop_button = nullptr;
+
+	// Image attachments
+	static const int MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+	static const int THUMBNAIL_SIZE = 64;
+	Vector<AttachmentInfo> pending_attachments;
+	ScrollContainer *attachment_scroll = nullptr;
+	HBoxContainer *attachment_preview_container = nullptr;
+	Button *attach_image_button = nullptr;
+	EditorFileDialog *image_file_dialog = nullptr;
 
 	// Slash command autocomplete (inline, non-modal)
 	VBoxContainer *slash_hint_container = nullptr;
@@ -244,10 +283,26 @@ private:
 	void _on_reconnect_pressed();
 	void _on_template_selected(int p_id);
 	void _on_prompt_input_gui_input(const Ref<InputEvent> &p_event);
+
+	// Image attachment handling
+	void _on_attach_image_pressed();
+	void _on_image_files_selected(const PackedStringArray &p_paths);
+	void _on_files_dropped_on_dock(const PackedStringArray &p_files);
+	void _on_remove_attachment(int p_index);
+	bool _add_attachment_from_file(const String &p_path);
+	bool _add_attachment_from_clipboard_image();
+	void _rebuild_attachment_previews();
+	void _clear_attachments();
+	String _get_mime_type_for_extension(const String &p_extension) const;
+	String _encode_data_url(const String &p_mime, const Vector<uint8_t> &p_data) const;
+	bool _is_supported_image_extension(const String &p_extension) const;
+
 	void _on_plan_mode_toggled(bool p_enabled);
 	void _on_auto_accept_toggled(bool p_enabled);
 	void _on_settings_pressed();
-	void _on_settings_test_pressed();
+	void _on_replicate_test_pressed();
+	void _on_meshy_test_pressed();
+	void _test_provider(const String &p_provider_id, LineEdit *p_input, Button *p_button, Label *p_status);
 	void _on_settings_save_pressed();
 	void _on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _auto_configure_providers();
@@ -293,6 +348,10 @@ private:
 	void _add_ai_message(const String &p_text);
 	void _add_system_message(const String &p_text);
 	void _add_tool_message(const String &p_part_id, const String &p_tool_name, const String &p_status, const Dictionary &p_details);
+	void _scroll_chat_to_bottom();
+	void _toggle_turn_collapse(int p_user_msg_index);
+	void _on_chat_scroll_changed(double p_value);
+	void _update_sticky_header();
 	void _clear_tool_tracking();
 	String _format_tool_display_name(const String &p_tool_name) const;
 	void _on_tool_meta_clicked(const Variant &p_meta);

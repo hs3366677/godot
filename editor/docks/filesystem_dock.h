@@ -57,6 +57,7 @@ class SceneCreateDialog;
 class ShaderCreateDialog;
 class DirectoryCreateDialog;
 class EditorResourceTooltipPlugin;
+class FileDialog;
 class VBoxContainer;
 
 class FileSystemTree : public Tree {
@@ -150,6 +151,7 @@ private:
 		FILE_MENU_AI_GENERATE_VARIATIONS,   // Imported - generate variations
 		FILE_MENU_AI_VIEW_SOURCE,           // Hybrid - navigate to source asset
 		FILE_MENU_AI_RETRANSFORM,           // Hybrid - re-run transform
+		FILE_MENU_AI_REPLACE_WITH_FILE,     // Placeholder/Generated - replace with manual file
 		FILE_MENU_MAX,
 		// Extra shortcuts that don't exist in the menu.
 		EXTRA_FOCUS_PATH,
@@ -225,6 +227,8 @@ private:
 	RichTextLabel *ai_metadata_content = nullptr;
 	AcceptDialog *ai_prompt_dialog = nullptr;
 	RichTextLabel *ai_prompt_content = nullptr;
+	FileDialog *ai_replace_file_dialog = nullptr;
+	String ai_replace_target_path;
 
 	SceneCreateDialog *make_scene_dialog = nullptr;
 	ScriptCreateDialog *make_script_dialog = nullptr;
@@ -348,6 +352,7 @@ private:
 	void _file_list_rmb_option(int p_option);
 	void _generic_rmb_option_selected(int p_option);
 	void _file_option(int p_option, const Vector<String> &p_selected);
+	void _on_ai_replace_file_selected(const String &p_path);
 	int _get_menu_option_from_key(const Ref<InputEventKey> &p_key);
 
 	void _fw_history();
