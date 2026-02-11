@@ -114,6 +114,7 @@ public:
 	void generate_with_params(const String &p_path, const String &p_prompt, const String &p_negative_prompt, const String &p_model, int p_seed);
 	void open_prompt_editor(const String &p_path, AIPromptEditorDialog::Mode p_mode);
 	void open_enhance_dialog(const String &p_path);
+	void post_process_asset(const String &p_path);
 
 	bool is_busy() const { return state != STATE_IDLE; }
 	State get_state() const { return state; }

@@ -21,8 +21,11 @@
 #include "editor/settings/editor_settings.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/run/editor_run_bar.h"
+#include "editor/gui/editor_file_dialog.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/separator.h"
+#include "scene/resources/style_box_flat.h"
+#include "servers/display/display_server.h"
 
 void AIAssistantDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_service_url", "url"), &AIAssistantDock::set_service_url);
@@ -152,6 +155,34 @@ void AIAssistantDock::_setup_ui() {
 	chat_auto_scroll->set_pressed(true);
 	chat_toolbar->add_child(chat_auto_scroll);
 
+	// Sticky header — pins current user question at top of chat scroll
+	sticky_header = memnew(PanelContainer);
+	sticky_header->set_visible(false);
+	Ref<StyleBoxFlat> sticky_bg;
+	sticky_bg.instantiate();
+	sticky_bg->set_bg_color(Color(0.15, 0.18, 0.25, 0.95));
+	sticky_bg->set_content_margin_all(4);
+	sticky_header->add_theme_style_override("panel", sticky_bg);
+	chat_tab->add_child(sticky_header);
+
+	HBoxContainer *sticky_hbox = memnew(HBoxContainer);
+	sticky_hbox->add_theme_constant_override("separation", 4);
+	sticky_header->add_child(sticky_hbox);
+
+	sticky_collapse_btn = memnew(Button);
+	sticky_collapse_btn->set_text(U"\u25BC");
+	sticky_collapse_btn->set_custom_minimum_size(Size2(24, 24));
+	sticky_collapse_btn->set_tooltip_text("Collapse/expand this AI response");
+	sticky_collapse_btn->add_theme_font_size_override("font_size", 10);
+	sticky_hbox->add_child(sticky_collapse_btn);
+
+	sticky_text_label = memnew(RichTextLabel);
+	sticky_text_label->set_use_bbcode(true);
+	sticky_text_label->set_fit_content(true);
+	sticky_text_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	sticky_text_label->set_custom_minimum_size(Size2(0, 24));
+	sticky_hbox->add_child(sticky_text_label);
+
 	// Chat area
 	chat_scroll = memnew(ScrollContainer);
 	chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
@@ -161,6 +192,7 @@ void AIAssistantDock::_setup_ui() {
 	chat_container = memnew(VBoxContainer);
 	chat_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->add_child(chat_container);
+	chat_container->connect("resized", callable_mp(this, &AIAssistantDock::_scroll_chat_to_bottom));
 
 	// Welcome message
 	RichTextLabel *welcome = memnew(RichTextLabel);
@@ -179,15 +211,32 @@ void AIAssistantDock::_setup_ui() {
 	input_container = memnew(VBoxContainer);
 	chat_tab->add_child(input_container);
 
+	// Attachment thumbnail preview strip (horizontal scroll, hidden when empty)
+	attachment_scroll = memnew(ScrollContainer);
+	attachment_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	attachment_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_SHOW_ALWAYS);
+	attachment_scroll->set_custom_minimum_size(Size2(0, THUMBNAIL_SIZE + 8));
+	attachment_scroll->set_visible(false);
+	input_container->add_child(attachment_scroll);
+
+	attachment_preview_container = memnew(HBoxContainer);
+	attachment_preview_container->add_theme_constant_override("separation", 4);
+	attachment_scroll->add_child(attachment_preview_container);
+
 	prompt_input = memnew(TextEdit);
 	prompt_input->set_custom_minimum_size(Size2(0, 60));
 	prompt_input->set_placeholder("Describe what you want to create...");
 	prompt_input->set_line_wrapping_mode(TextEdit::LineWrappingMode::LINE_WRAPPING_BOUNDARY);
 	input_container->add_child(prompt_input);
 
-	// Button row with Send and Stop
+	// Button row with Attach, Send and Stop
 	button_container = memnew(HBoxContainer);
 	input_container->add_child(button_container);
+
+	attach_image_button = memnew(Button);
+	attach_image_button->set_text("Img+");
+	attach_image_button->set_tooltip_text("Attach image(s) - PNG, JPG, WebP, GIF (max 10 MB each)");
+	button_container->add_child(attach_image_button);
 
 	send_button = memnew(Button);
 	send_button->set_text("Send (Enter)");
@@ -206,6 +255,18 @@ void AIAssistantDock::_setup_ui() {
 	slash_hint_container->set_visible(false);
 	input_container->add_child(slash_hint_container);
 	input_container->move_child(slash_hint_container, 0); // Place above prompt_input
+
+	// File dialog for image selection (multi-select, filesystem access)
+	image_file_dialog = memnew(EditorFileDialog);
+	image_file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILES);
+	image_file_dialog->set_title(TTR("Select Image(s) to Attach"));
+	image_file_dialog->add_filter("*.png", TTR("PNG Image"));
+	image_file_dialog->add_filter("*.jpg", TTR("JPEG Image"));
+	image_file_dialog->add_filter("*.jpeg", TTR("JPEG Image"));
+	image_file_dialog->add_filter("*.webp", TTR("WebP Image"));
+	image_file_dialog->add_filter("*.gif", TTR("GIF Image"));
+	image_file_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
+	add_child(image_file_dialog);
 
 	// Processing indicator — overlay on top-right of prompt_input
 	processing_label = memnew(Label);
@@ -318,9 +379,21 @@ void AIAssistantDock::_setup_ui() {
 
 	VBoxContainer *settings_vbox = memnew(VBoxContainer);
 
+	// ── Replicate (2D textures) ──
+	HBoxContainer *replicate_header = memnew(HBoxContainer);
 	Label *replicate_label = memnew(Label);
 	replicate_label->set_text("Replicate API Token:");
-	settings_vbox->add_child(replicate_label);
+	replicate_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	replicate_header->add_child(replicate_label);
+	replicate_test_button = memnew(Button);
+	replicate_test_button->set_text("Test");
+	replicate_header->add_child(replicate_test_button);
+	replicate_status_label = memnew(Label);
+	replicate_status_label->set_text("");
+	replicate_status_label->add_theme_font_size_override("font_size", 11);
+	replicate_status_label->set_custom_minimum_size(Size2(80, 0));
+	replicate_header->add_child(replicate_status_label);
+	settings_vbox->add_child(replicate_header);
 
 	Label *replicate_hint = memnew(Label);
 	replicate_hint->set_text("Get your token from replicate.com/account/api-tokens");
@@ -333,18 +406,34 @@ void AIAssistantDock::_setup_ui() {
 	replicate_token_input->set_secret(true);
 	settings_vbox->add_child(replicate_token_input);
 
-	HBoxContainer *settings_button_row = memnew(HBoxContainer);
-	settings_test_button = memnew(Button);
-	settings_test_button->set_text("Test Connection");
-	settings_button_row->add_child(settings_test_button);
+	// ── Meshy (3D models) ──
+	settings_vbox->add_child(memnew(HSeparator));
 
-	settings_button_row->add_spacer();
+	HBoxContainer *meshy_header = memnew(HBoxContainer);
+	Label *meshy_label = memnew(Label);
+	meshy_label->set_text("Meshy API Key (3D Models):");
+	meshy_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	meshy_header->add_child(meshy_label);
+	meshy_test_button = memnew(Button);
+	meshy_test_button->set_text("Test");
+	meshy_header->add_child(meshy_test_button);
+	meshy_status_label = memnew(Label);
+	meshy_status_label->set_text("");
+	meshy_status_label->add_theme_font_size_override("font_size", 11);
+	meshy_status_label->set_custom_minimum_size(Size2(80, 0));
+	meshy_header->add_child(meshy_status_label);
+	settings_vbox->add_child(meshy_header);
 
-	settings_status_label = memnew(Label);
-	settings_status_label->set_text("");
-	settings_status_label->add_theme_font_size_override("font_size", 12);
-	settings_button_row->add_child(settings_status_label);
-	settings_vbox->add_child(settings_button_row);
+	Label *meshy_hint = memnew(Label);
+	meshy_hint->set_text("Get your key from meshy.ai — used for AI 3D model generation");
+	meshy_hint->add_theme_font_size_override("font_size", 11);
+	meshy_hint->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
+	settings_vbox->add_child(meshy_hint);
+
+	meshy_token_input = memnew(LineEdit);
+	meshy_token_input->set_placeholder("msy_...");
+	meshy_token_input->set_secret(true);
+	settings_vbox->add_child(meshy_token_input);
 
 	settings_dialog->add_child(settings_vbox);
 	add_child(settings_dialog);
@@ -352,7 +441,8 @@ void AIAssistantDock::_setup_ui() {
 	settings_http_request = memnew(HTTPRequest);
 	add_child(settings_http_request);
 	settings_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_settings_request_completed));
-	settings_test_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_settings_test_pressed));
+	replicate_test_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_replicate_test_pressed));
+	meshy_test_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_meshy_test_pressed));
 	settings_dialog->connect("confirmed", callable_mp(this, &AIAssistantDock::_on_settings_save_pressed));
 
 	// Tool detail viewer popup (shows full input/output on click)
@@ -427,6 +517,13 @@ void AIAssistantDock::_connect_signals() {
 	prompt_input->connect("text_changed", callable_mp(this, &AIAssistantDock::_on_prompt_text_changed));
 	http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_http_request_completed));
 
+	// Image attachment signals
+	attach_image_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_attach_image_pressed));
+	image_file_dialog->connect("files_selected", callable_mp(this, &AIAssistantDock::_on_image_files_selected));
+
+	// Sticky header scroll tracking
+	chat_scroll->get_v_scroll_bar()->connect("value_changed", callable_mp(this, &AIAssistantDock::_on_chat_scroll_changed));
+
 	// Mode toggles
 	plan_mode_toggle->connect("toggled", callable_mp(this, &AIAssistantDock::_on_plan_mode_toggled));
 	auto_accept_toggle->connect("toggled", callable_mp(this, &AIAssistantDock::_on_auto_accept_toggled));
@@ -479,6 +576,9 @@ void AIAssistantDock::_notification(int p_what) {
 			call_deferred("_check_service_health_deferred");
 			// Enable process to poll for debugger errors
 			set_process(true);
+			// Connect to viewport files_dropped for external drag-and-drop
+			get_tree()->get_root()->connect("files_dropped",
+					callable_mp(this, &AIAssistantDock::_on_files_dropped_on_dock));
 		} break;
 
 		case NOTIFICATION_READY: {
@@ -497,6 +597,13 @@ void AIAssistantDock::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_EXIT_TREE: {
+			// Disconnect files_dropped signal
+			if (get_tree() && get_tree()->get_root() &&
+					get_tree()->get_root()->is_connected("files_dropped",
+							callable_mp(this, &AIAssistantDock::_on_files_dropped_on_dock))) {
+				get_tree()->get_root()->disconnect("files_dropped",
+						callable_mp(this, &AIAssistantDock::_on_files_dropped_on_dock));
+			}
 			// Stop timers
 			if (logs_poll_timer && logs_poll_timer->is_inside_tree()) {
 				logs_poll_timer->stop();
@@ -725,6 +832,17 @@ void AIAssistantDock::_send_message(const String &p_content) {
 	text_part["text"] = message_content;
 	parts.push_back(text_part);
 
+	// Append image attachments as file parts
+	for (int i = 0; i < pending_attachments.size(); i++) {
+		const AttachmentInfo &att = pending_attachments[i];
+		Dictionary file_part;
+		file_part["type"] = "file";
+		file_part["mime"] = att.mime_type;
+		file_part["filename"] = att.filename;
+		file_part["url"] = _encode_data_url(att.mime_type, att.data);
+		parts.push_back(file_part);
+	}
+
 	Dictionary body;
 	body["sessionID"] = session_id;
 	body["parts"] = parts;
@@ -944,13 +1062,18 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 
 void AIAssistantDock::_on_send_pressed() {
 	String prompt = prompt_input->get_text().strip_edges();
-	if (prompt.is_empty()) {
+	if (prompt.is_empty() && pending_attachments.is_empty()) {
 		return;
+	}
+
+	if (prompt.is_empty()) {
+		prompt = "[Image attachment(s)]";
 	}
 
 	_add_user_message(prompt);
 	_process_prompt(prompt);
 	prompt_input->set_text("");
+	_clear_attachments();
 }
 
 void AIAssistantDock::_on_stop_pressed() {
@@ -1002,6 +1125,13 @@ void AIAssistantDock::_on_clear_pressed() {
 	}
 	chat_history.clear();
 	_clear_tool_tracking();
+	_clear_attachments();
+	user_message_indices.clear();
+	collapse_buttons.clear();
+	collapsed_turns.clear();
+	user_message_texts.clear();
+	sticky_header->set_visible(false);
+	sticky_current_turn_index = -1;
 	_add_system_message("Chat cleared. Creating new session...");
 
 	// Delete the current session on the server (if it exists)
@@ -1017,87 +1147,140 @@ void AIAssistantDock::_on_clear_pressed() {
 }
 
 void AIAssistantDock::_on_settings_pressed() {
-	settings_status_label->set_text("");
-	// Pre-fill with saved token from EditorSettings
-	String saved = EDITOR_GET("ai/providers/replicate/api_key");
-	if (!saved.is_empty()) {
-		replicate_token_input->set_text(saved);
+	replicate_status_label->set_text("");
+	meshy_status_label->set_text("");
+	// Pre-fill with saved tokens from EditorSettings
+	String saved_replicate = EDITOR_GET("ai/providers/replicate/api_key");
+	if (!saved_replicate.is_empty()) {
+		replicate_token_input->set_text(saved_replicate);
+	}
+	String saved_meshy = EDITOR_GET("ai/providers/meshy/api_key");
+	if (!saved_meshy.is_empty()) {
+		meshy_token_input->set_text(saved_meshy);
 	}
 	settings_dialog->popup_centered();
 }
 
-void AIAssistantDock::_on_settings_test_pressed() {
-	String token = replicate_token_input->get_text().strip_edges();
+void AIAssistantDock::_on_replicate_test_pressed() {
+	_test_provider("replicate", replicate_token_input, replicate_test_button, replicate_status_label);
+}
+
+void AIAssistantDock::_on_meshy_test_pressed() {
+	_test_provider("meshy", meshy_token_input, meshy_test_button, meshy_status_label);
+}
+
+void AIAssistantDock::_test_provider(const String &p_provider_id, LineEdit *p_input, Button *p_button, Label *p_status) {
+	String token = p_input->get_text().strip_edges();
 	if (token.is_empty()) {
-		settings_status_label->set_text("Please enter a token");
-		settings_status_label->add_theme_color_override("font_color", Color(1, 0.5, 0));
+		p_status->set_text("No key");
+		p_status->add_theme_color_override("font_color", Color(1, 0.5, 0));
 		return;
 	}
 
-	settings_status_label->set_text("Testing...");
-	settings_status_label->add_theme_color_override("font_color", Color(1, 1, 0));
-	settings_test_button->set_disabled(true);
+	p_status->set_text("Testing...");
+	p_status->add_theme_color_override("font_color", Color(1, 1, 0));
+	p_button->set_disabled(true);
+	settings_testing_provider = p_provider_id;
 
-	// POST to /ai-assets/providers/configure to test+register
 	String url = service_url + "/ai-assets/providers/configure";
 	Dictionary body;
-	body["providerId"] = "replicate";
+	body["providerId"] = p_provider_id;
 	body["apiKey"] = token;
 
 	String json_body = JSON::stringify(body);
+	print_line("[AI Settings] Testing provider: " + p_provider_id + " url: " + url);
+	print_line("[AI Settings] Body: " + json_body);
+
 	Vector<String> headers = _get_headers_with_directory();
-	settings_http_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
+	Error err = settings_http_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
+	if (err != OK) {
+		print_line("[AI Settings] HTTPRequest::request() failed with error: " + itos(err));
+		p_status->set_text("Req error");
+		p_status->add_theme_color_override("font_color", Color(1, 0, 0));
+		p_button->set_disabled(false);
+	}
 }
 
 void AIAssistantDock::_on_settings_save_pressed() {
-	String token = replicate_token_input->get_text().strip_edges();
-	if (token.is_empty()) {
-		return;
+	Vector<String> headers = _get_headers_with_directory();
+	bool any_saved = false;
+
+	// Save Replicate token
+	String replicate_token = replicate_token_input->get_text().strip_edges();
+	if (!replicate_token.is_empty()) {
+		EditorSettings::get_singleton()->set("ai/providers/replicate/api_key", replicate_token);
+		any_saved = true;
+
+		// Configure on running server (fire-and-forget)
+		Dictionary body;
+		body["providerId"] = "replicate";
+		body["apiKey"] = replicate_token;
+		String url = service_url + "/ai-assets/providers/configure";
+		HTTPRequest *req = memnew(HTTPRequest);
+		add_child(req);
+		req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+		req->request(url, headers, HTTPClient::METHOD_POST, JSON::stringify(body));
 	}
 
-	// Persist to EditorSettings immediately (survives editor restarts)
-	EditorSettings::get_singleton()->set("ai/providers/replicate/api_key", token);
-	EditorSettings::get_singleton()->save();
+	// Save Meshy token
+	String meshy_token = meshy_token_input->get_text().strip_edges();
+	if (!meshy_token.is_empty()) {
+		EditorSettings::get_singleton()->set("ai/providers/meshy/api_key", meshy_token);
+		any_saved = true;
 
-	// Also configure on the running server
-	String url = service_url + "/ai-assets/providers/configure";
-	Dictionary body;
-	body["providerId"] = "replicate";
-	body["apiKey"] = token;
+		Dictionary body;
+		body["providerId"] = "meshy";
+		body["apiKey"] = meshy_token;
+		String url = service_url + "/ai-assets/providers/configure";
+		HTTPRequest *req = memnew(HTTPRequest);
+		add_child(req);
+		req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+		req->request(url, headers, HTTPClient::METHOD_POST, JSON::stringify(body));
+	}
 
-	String json_body = JSON::stringify(body);
-	Vector<String> headers = _get_headers_with_directory();
-	settings_http_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
+	if (any_saved) {
+		EditorSettings::get_singleton()->save();
+	}
 }
 
 void AIAssistantDock::_on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	settings_test_button->set_disabled(false);
+	// Resolve which provider's UI to update
+	Button *btn = replicate_test_button;
+	Label *status = replicate_status_label;
+	if (settings_testing_provider == "meshy") {
+		btn = meshy_test_button;
+		status = meshy_status_label;
+	}
+	btn->set_disabled(false);
+
+	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	print_line("[AI Settings] Test result for " + settings_testing_provider + ": http_result=" + itos(p_result) + " code=" + itos(p_code) + " body=" + response_text);
 
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		settings_status_label->set_text("Connection failed");
-		settings_status_label->add_theme_color_override("font_color", Color(1, 0, 0));
+		status->set_text("Failed");
+		status->add_theme_color_override("font_color", Color(1, 0, 0));
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
 	JSON json;
 	Error err = json.parse(response_text);
 
 	if (err != OK) {
-		settings_status_label->set_text("Invalid response");
-		settings_status_label->add_theme_color_override("font_color", Color(1, 0, 0));
+		status->set_text("Error");
+		status->add_theme_color_override("font_color", Color(1, 0, 0));
 		return;
 	}
 
 	Dictionary result = json.get_data();
 	if (result.get("success", false)) {
-		settings_status_label->set_text("Connected!");
-		settings_status_label->add_theme_color_override("font_color", Color(0, 1, 0));
-		_add_system_message("Replicate provider configured successfully!");
+		status->set_text("Connected!");
+		status->add_theme_color_override("font_color", Color(0, 1, 0));
+		_add_system_message(settings_testing_provider.capitalize() + " provider configured successfully!");
 	} else {
 		String error_msg = result.get("error", "Unknown error");
-		settings_status_label->set_text("Failed: " + error_msg);
-		settings_status_label->add_theme_color_override("font_color", Color(1, 0, 0));
+		print_line("[AI Settings] Provider returned error: " + error_msg);
+		status->set_text("Failed");
+		status->add_theme_color_override("font_color", Color(1, 0, 0));
 	}
 }
 
@@ -1314,6 +1497,17 @@ void AIAssistantDock::_on_prompt_input_gui_input(const Ref<InputEvent> &p_event)
 		return;
 	}
 
+	// Ctrl+V: Check for clipboard image before default text paste
+	if (key->get_keycode() == Key::V && key->is_ctrl_pressed() && !key->is_shift_pressed()) {
+		if (DisplayServer::get_singleton()->clipboard_has_image()) {
+			if (_add_attachment_from_clipboard_image()) {
+				prompt_input->accept_event();
+				return;
+			}
+		}
+		// No image in clipboard — fall through to normal text paste
+	}
+
 	bool hints_visible = slash_hint_container->is_visible() && slash_hint_buttons.size() > 0;
 
 	if (key->get_keycode() == Key::ENTER && !key->is_shift_pressed()) {
@@ -1341,6 +1535,228 @@ void AIAssistantDock::_on_prompt_input_gui_input(const Ref<InputEvent> &p_event)
 		_update_slash_hint_highlight();
 		prompt_input->accept_event();
 	}
+}
+
+// ============================================================
+// Image Attachment Methods
+// ============================================================
+
+bool AIAssistantDock::_is_supported_image_extension(const String &p_extension) const {
+	String ext = p_extension.to_lower();
+	return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp" || ext == "gif";
+}
+
+String AIAssistantDock::_get_mime_type_for_extension(const String &p_extension) const {
+	String ext = p_extension.to_lower();
+	if (ext == "png") {
+		return "image/png";
+	} else if (ext == "jpg" || ext == "jpeg") {
+		return "image/jpeg";
+	} else if (ext == "webp") {
+		return "image/webp";
+	} else if (ext == "gif") {
+		return "image/gif";
+	}
+	return "application/octet-stream";
+}
+
+String AIAssistantDock::_encode_data_url(const String &p_mime, const Vector<uint8_t> &p_data) const {
+	String b64 = CryptoCore::b64_encode_str(p_data.ptr(), p_data.size());
+	return "data:" + p_mime + ";base64," + b64;
+}
+
+void AIAssistantDock::_on_attach_image_pressed() {
+	image_file_dialog->popup_file_dialog();
+}
+
+void AIAssistantDock::_on_image_files_selected(const PackedStringArray &p_paths) {
+	bool any_added = false;
+	for (int i = 0; i < p_paths.size(); i++) {
+		if (_add_attachment_from_file(p_paths[i])) {
+			any_added = true;
+		}
+	}
+	if (any_added) {
+		_rebuild_attachment_previews();
+	}
+}
+
+void AIAssistantDock::_on_files_dropped_on_dock(const PackedStringArray &p_files) {
+	if (!is_visible_in_tree()) {
+		return;
+	}
+
+	// Only accept drops when mouse is over the input area
+	Vector2 global_mouse = get_global_mouse_position();
+	Rect2 input_rect = input_container->get_global_rect();
+	if (!input_rect.has_point(global_mouse)) {
+		return;
+	}
+
+	bool any_added = false;
+	for (int i = 0; i < p_files.size(); i++) {
+		String ext = p_files[i].get_extension().to_lower();
+		if (_is_supported_image_extension(ext)) {
+			if (_add_attachment_from_file(p_files[i])) {
+				any_added = true;
+			}
+		}
+	}
+
+	if (any_added) {
+		_rebuild_attachment_previews();
+	}
+}
+
+bool AIAssistantDock::_add_attachment_from_file(const String &p_path) {
+	String ext = p_path.get_extension().to_lower();
+	if (!_is_supported_image_extension(ext)) {
+		_add_system_message("Unsupported image format: " + ext + ". Use PNG, JPG, WebP, or GIF.");
+		return false;
+	}
+
+	Error err;
+	Vector<uint8_t> data = FileAccess::get_file_as_bytes(p_path, &err);
+	if (err != OK || data.is_empty()) {
+		_add_system_message("Failed to read image file: " + p_path);
+		return false;
+	}
+
+	if (data.size() > MAX_IMAGE_SIZE_BYTES) {
+		float size_mb = data.size() / (1024.0f * 1024.0f);
+		_add_system_message(vformat("Image too large (%.1f MB). Maximum size is 10 MB: %s", size_mb, p_path.get_file()));
+		return false;
+	}
+
+	// Load image for thumbnail
+	Ref<Image> img = Image::load_from_file(p_path);
+	if (img.is_null() || img->is_empty()) {
+		_add_system_message("Failed to load image for preview: " + p_path.get_file());
+		return false;
+	}
+
+	// Create thumbnail preserving aspect ratio
+	Ref<Image> thumb = img->duplicate();
+	int tw = thumb->get_width();
+	int th = thumb->get_height();
+	if (tw > th) {
+		th = MAX(1, th * THUMBNAIL_SIZE / tw);
+		tw = THUMBNAIL_SIZE;
+	} else {
+		tw = MAX(1, tw * THUMBNAIL_SIZE / th);
+		th = THUMBNAIL_SIZE;
+	}
+	thumb->resize(tw, th);
+
+	AttachmentInfo att;
+	att.file_path = p_path;
+	att.filename = p_path.get_file();
+	att.mime_type = _get_mime_type_for_extension(ext);
+	att.data = data;
+	att.thumbnail = ImageTexture::create_from_image(thumb);
+	pending_attachments.push_back(att);
+
+	return true;
+}
+
+bool AIAssistantDock::_add_attachment_from_clipboard_image() {
+	Ref<Image> clipboard_image = DisplayServer::get_singleton()->clipboard_get_image();
+	if (clipboard_image.is_null() || clipboard_image->is_empty()) {
+		return false;
+	}
+
+	Vector<uint8_t> png_data = clipboard_image->save_png_to_buffer();
+	if (png_data.is_empty()) {
+		_add_system_message("Failed to encode clipboard image as PNG.");
+		return false;
+	}
+
+	if (png_data.size() > MAX_IMAGE_SIZE_BYTES) {
+		float size_mb = png_data.size() / (1024.0f * 1024.0f);
+		_add_system_message(vformat("Clipboard image too large (%.1f MB). Maximum size is 10 MB.", size_mb));
+		return false;
+	}
+
+	String timestamp = Time::get_singleton()->get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "_");
+	String filename = "clipboard_" + timestamp + ".png";
+
+	// Create thumbnail
+	Ref<Image> thumb = clipboard_image->duplicate();
+	int tw = thumb->get_width();
+	int th = thumb->get_height();
+	if (tw > th) {
+		th = MAX(1, th * THUMBNAIL_SIZE / tw);
+		tw = THUMBNAIL_SIZE;
+	} else {
+		tw = MAX(1, tw * THUMBNAIL_SIZE / th);
+		th = THUMBNAIL_SIZE;
+	}
+	thumb->resize(tw, th);
+
+	AttachmentInfo att;
+	att.file_path = "";
+	att.filename = filename;
+	att.mime_type = "image/png";
+	att.data = png_data;
+	att.thumbnail = ImageTexture::create_from_image(thumb);
+	pending_attachments.push_back(att);
+
+	_rebuild_attachment_previews();
+	return true;
+}
+
+void AIAssistantDock::_on_remove_attachment(int p_index) {
+	if (p_index < 0 || p_index >= pending_attachments.size()) {
+		return;
+	}
+	pending_attachments.remove_at(p_index);
+	_rebuild_attachment_previews();
+}
+
+void AIAssistantDock::_rebuild_attachment_previews() {
+	// Clear existing preview children
+	while (attachment_preview_container->get_child_count() > 0) {
+		Node *child = attachment_preview_container->get_child(0);
+		attachment_preview_container->remove_child(child);
+		memdelete(child);
+	}
+
+	if (pending_attachments.is_empty()) {
+		attachment_scroll->set_visible(false);
+		return;
+	}
+
+	attachment_scroll->set_visible(true);
+
+	for (int i = 0; i < pending_attachments.size(); i++) {
+		const AttachmentInfo &att = pending_attachments[i];
+
+		VBoxContainer *item = memnew(VBoxContainer);
+		item->set_custom_minimum_size(Size2(THUMBNAIL_SIZE + 8, THUMBNAIL_SIZE + 24));
+
+		TextureRect *tex_rect = memnew(TextureRect);
+		tex_rect->set_texture(att.thumbnail);
+		tex_rect->set_custom_minimum_size(Size2(THUMBNAIL_SIZE, THUMBNAIL_SIZE));
+		tex_rect->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+		tex_rect->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+		tex_rect->set_tooltip_text(att.filename + " (" + String::humanize_size(att.data.size()) + ")");
+		item->add_child(tex_rect);
+
+		Button *remove_btn = memnew(Button);
+		remove_btn->set_text("x");
+		remove_btn->set_tooltip_text("Remove " + att.filename);
+		remove_btn->set_custom_minimum_size(Size2(0, 18));
+		remove_btn->add_theme_font_size_override("font_size", 10);
+		remove_btn->connect("pressed", callable_mp(this, &AIAssistantDock::_on_remove_attachment).bind(i));
+		item->add_child(remove_btn);
+
+		attachment_preview_container->add_child(item);
+	}
+}
+
+void AIAssistantDock::_clear_attachments() {
+	pending_attachments.clear();
+	_rebuild_attachment_previews();
 }
 
 void AIAssistantDock::_process_prompt(const String &p_prompt) {
@@ -1490,11 +1906,129 @@ void AIAssistantDock::_add_message(const String &p_sender, const String &p_text,
 	msg_container->add_child(memnew(HSeparator));
 
 	chat_container->add_child(msg_container);
+}
 
-	// Scroll to bottom if auto-scroll is enabled
+void AIAssistantDock::_scroll_chat_to_bottom() {
 	if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
-		callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(INT32_MAX);
+		chat_scroll->set_v_scroll(INT32_MAX);
 	}
+}
+
+void AIAssistantDock::_toggle_turn_collapse(int p_user_msg_index) {
+	bool is_collapsed = collapsed_turns.has(p_user_msg_index) && collapsed_turns[p_user_msg_index];
+	bool new_state = !is_collapsed;
+	collapsed_turns[p_user_msg_index] = new_state;
+
+	// Update button text
+	if (collapse_buttons.has(p_user_msg_index)) {
+		collapse_buttons[p_user_msg_index]->set_text(new_state ? U"\u25B6" : U"\u25BC"); // ▶ collapsed, ▼ expanded
+	}
+
+	// Find the range of children to hide/show: from (p_user_msg_index + 1) to next user message index
+	int start_idx = p_user_msg_index + 1;
+	int end_idx = chat_container->get_child_count(); // default: to end
+
+	for (int i = 0; i < user_message_indices.size(); i++) {
+		if (user_message_indices[i] == p_user_msg_index) {
+			if (i + 1 < user_message_indices.size()) {
+				end_idx = user_message_indices[i + 1];
+			}
+			break;
+		}
+	}
+
+	for (int i = start_idx; i < end_idx && i < chat_container->get_child_count(); i++) {
+		Node *child = chat_container->get_child(i);
+		Control *ctrl = Object::cast_to<Control>(child);
+		if (ctrl) {
+			ctrl->set_visible(!new_state);
+		}
+	}
+
+	// Sync sticky header if it's showing this turn
+	if (sticky_current_turn_index == p_user_msg_index) {
+		sticky_collapse_btn->set_text(new_state ? U"\u25B6" : U"\u25BC");
+	}
+}
+
+void AIAssistantDock::_on_chat_scroll_changed(double p_value) {
+	_update_sticky_header();
+}
+
+void AIAssistantDock::_update_sticky_header() {
+	if (user_message_indices.is_empty()) {
+		sticky_header->set_visible(false);
+		sticky_current_turn_index = -1;
+		return;
+	}
+
+	// Find which user message's response is currently in view.
+	// The sticky header shows the user message whose container is scrolled
+	// above (or at) the top of the visible area.
+	float scroll_top = chat_scroll->get_v_scroll();
+	int found_index = -1;
+
+	for (int i = user_message_indices.size() - 1; i >= 0; i--) {
+		int child_idx = user_message_indices[i];
+		if (child_idx >= chat_container->get_child_count()) {
+			continue;
+		}
+		Control *child = Object::cast_to<Control>(chat_container->get_child(child_idx));
+		if (!child) {
+			continue;
+		}
+		// The child's position.y is relative to chat_container (which scrolls).
+		// If its top is at or above the scroll position, this turn is currently being viewed.
+		float child_top = child->get_position().y;
+		if (child_top <= scroll_top + 5) { // small threshold
+			found_index = child_idx;
+			break;
+		}
+	}
+
+	if (found_index < 0) {
+		sticky_header->set_visible(false);
+		sticky_current_turn_index = -1;
+		return;
+	}
+
+	// Only show sticky header if the user message itself is scrolled out of view
+	Control *user_msg = Object::cast_to<Control>(chat_container->get_child(found_index));
+	if (user_msg) {
+		float msg_bottom = user_msg->get_position().y + user_msg->get_size().y;
+		if (msg_bottom > scroll_top) {
+			// User message is still partially visible — no need for sticky
+			sticky_header->set_visible(false);
+			sticky_current_turn_index = -1;
+			return;
+		}
+	}
+
+	// Update sticky header content
+	if (sticky_current_turn_index != found_index) {
+		// Disconnect old signal — disconnect all "pressed" connections to avoid stale binds
+		List<Object::Connection> pressed_conns;
+		sticky_collapse_btn->get_signal_connection_list("pressed", &pressed_conns);
+		for (const Object::Connection &conn : pressed_conns) {
+			sticky_collapse_btn->disconnect("pressed", conn.callable);
+		}
+
+		sticky_current_turn_index = found_index;
+
+		// Set text
+		if (user_message_texts.has(found_index)) {
+			sticky_text_label->set_text(user_message_texts[found_index]);
+		}
+
+		// Set collapse state
+		bool is_collapsed = collapsed_turns.has(found_index) && collapsed_turns[found_index];
+		sticky_collapse_btn->set_text(is_collapsed ? U"\u25B6" : U"\u25BC");
+
+		// Connect to toggle for this turn
+		sticky_collapse_btn->connect("pressed", callable_mp(this, &AIAssistantDock::_toggle_turn_collapse).bind(found_index));
+	}
+
+	sticky_header->set_visible(true);
 }
 
 void AIAssistantDock::_add_user_message(const String &p_text) {
@@ -1502,7 +2036,55 @@ void AIAssistantDock::_add_user_message(const String &p_text) {
 	if (p_text.begins_with("[CODING STANDARDS]")) {
 		return;
 	}
-	_add_message("You", p_text, Color(0.4, 0.6, 1.0));
+
+	String display_text = p_text;
+	if (!pending_attachments.is_empty()) {
+		display_text += "\n[color=gray][" + itos(pending_attachments.size()) + " image(s) attached][/color]";
+	}
+
+	// Build user message container with collapse button
+	Dictionary msg;
+	msg["sender"] = "You";
+	msg["text"] = display_text;
+	msg["timestamp"] = Time::get_singleton()->get_datetime_string_from_system();
+	chat_history.push_back(msg);
+
+	VBoxContainer *msg_container = memnew(VBoxContainer);
+
+	// Header row: collapse button + message text
+	HBoxContainer *header_row = memnew(HBoxContainer);
+	msg_container->add_child(header_row);
+
+	Button *collapse_btn = memnew(Button);
+	collapse_btn->set_text(U"\u25BC"); // ▼ (expanded)
+	collapse_btn->set_custom_minimum_size(Size2(24, 24));
+	collapse_btn->set_tooltip_text("Collapse/expand AI response");
+	collapse_btn->add_theme_font_size_override("font_size", 10);
+	header_row->add_child(collapse_btn);
+
+	String role_hex = Color(0.4, 0.6, 1.0).to_html(false);
+	String formatted_text = "[color=#" + role_hex + "][b]You:[/b][/color] " + display_text;
+
+	RichTextLabel *text_label = memnew(RichTextLabel);
+	text_label->set_use_bbcode(true);
+	text_label->set_fit_content(true);
+	text_label->set_text(formatted_text);
+	text_label->set_selection_enabled(true);
+	text_label->set_context_menu_enabled(true);
+	text_label->set_focus_mode(Control::FOCUS_CLICK);
+	text_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	header_row->add_child(text_label);
+
+	msg_container->add_child(memnew(HSeparator));
+	chat_container->add_child(msg_container);
+
+	// Track this user message index for collapse/expand
+	int child_idx = chat_container->get_child_count() - 1;
+	user_message_indices.push_back(child_idx);
+	collapse_buttons[child_idx] = collapse_btn;
+	collapsed_turns[child_idx] = false;
+	user_message_texts[child_idx] = formatted_text;
+	collapse_btn->connect("pressed", callable_mp(this, &AIAssistantDock::_toggle_turn_collapse).bind(child_idx));
 }
 
 void AIAssistantDock::_add_ai_message(const String &p_text) {
@@ -1832,11 +2414,6 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 
 	tool_containers[p_part_id] = tool_label;
 	chat_container->add_child(container);
-
-	// Scroll to bottom if auto-scroll is enabled
-	if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
-		callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(INT32_MAX);
-	}
 }
 
 void AIAssistantDock::_clear_tool_tracking() {
@@ -2138,11 +2715,6 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 					preview += "...";
 				}
 				_add_log_entry("LLM", preview, Color(0.5, 0.9, 0.5));
-			}
-
-			// Auto-scroll
-			if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
-				callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(INT32_MAX);
 			}
 		}
 	}
@@ -3577,11 +4149,6 @@ void AIAssistantDock::_show_question_dialog(const Dictionary &p_question) {
 
 	// Add to chat container
 	chat_container->add_child(question_container);
-
-	// Scroll to bottom if auto-scroll is enabled
-	if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
-		callable_mp(chat_scroll, &ScrollContainer::set_v_scroll).call_deferred(INT32_MAX);
-	}
 
 	_add_log_entry("QUESTION", "AI is asking: " + question_text.substr(0, 100) + (question_text.length() > 100 ? "..." : ""), Color(1.0, 0.8, 0.2));
 }
