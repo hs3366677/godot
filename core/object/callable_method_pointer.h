@@ -89,7 +89,7 @@ public:
 		if (ObjectDB::get_instance(ObjectID(data.object_id)) == nullptr) {
 			return ObjectID();
 		}
-		return data.instance->get_instance_id();
+		return ObjectID(data.object_id);
 	}
 
 	virtual int get_argument_count(bool &r_is_valid) const {

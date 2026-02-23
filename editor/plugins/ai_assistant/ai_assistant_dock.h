@@ -20,6 +20,7 @@
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/tab_container.h"
 #include "scene/gui/text_edit.h"
+#include "scene/gui/tree.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/panel_container.h"
@@ -31,6 +32,7 @@
 #include "core/io/json.h"
 #include "scene/resources/image_texture.h"
 
+class AIAssistantManager;
 class EditorFileDialog;
 
 class AIAssistantDock : public EditorDock {
@@ -84,6 +86,13 @@ public:
 	};
 
 private:
+	// Instance management
+	int instance_id = 0;
+	String initial_session_id;
+	Button *new_instance_button = nullptr;
+	void _on_new_instance_pressed();
+	void _on_close_instance_pressed();
+
 	// Main container
 	VBoxContainer *main_container = nullptr;
 
@@ -100,8 +109,11 @@ private:
 	Button *settings_button = nullptr;
 	Label *status_label = nullptr;
 
-	// Settings dialog (asset provider configuration)
+	// Settings dialog (asset provider configuration + prompt management)
 	AcceptDialog *settings_dialog = nullptr;
+	TabContainer *settings_tabs = nullptr;
+
+	// Providers tab
 	LineEdit *replicate_token_input = nullptr;
 	Button *replicate_test_button = nullptr;
 	Label *replicate_status_label = nullptr;
@@ -110,6 +122,13 @@ private:
 	Label *meshy_status_label = nullptr;
 	HTTPRequest *settings_http_request = nullptr;
 	String settings_testing_provider;
+
+	// Prompt tab
+	TextEdit *project_prompt_edit = nullptr;
+	Label *project_prompt_path_label = nullptr;
+	Button *generate_prompt_button = nullptr;
+	Tree *engine_prompt_tree = nullptr;
+	RichTextLabel *engine_prompt_preview = nullptr;
 
 	// Model selector (two-level submenu: Provider → Models)
 	MenuButton *model_button = nullptr;
@@ -306,6 +325,15 @@ private:
 	void _on_settings_save_pressed();
 	void _on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _auto_configure_providers();
+
+	// Prompt management
+	String _load_project_prompt();
+	void _save_project_prompt(const String &p_content);
+	String _generate_project_prompt_template();
+	Vector<String> _get_engine_prompt_files();
+	void _populate_engine_prompt_tree();
+	void _on_engine_prompt_selected();
+	void _on_generate_prompt_pressed();
 	void _process_slash_command(const String &p_command);
 	void _on_providers_status_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
@@ -389,6 +417,11 @@ private:
 	void _on_question_custom_submitted();
 	void _send_question_reply(const String &p_request_id, const Array &p_answers);
 
+	// Screenshot capture (for godot_screenshot tool)
+	Ref<Image> _get_game_viewport_image();
+	bool _add_attachment_from_raw_data(const String &p_filename, const String &p_mime, const Vector<uint8_t> &p_data);
+	void _post_screenshot_result(const String &p_id, const String &p_b64);
+
 	// Auto-verification
 	void _on_game_stopped();
 	void _auto_verify_game_logs();
@@ -432,4 +465,10 @@ public:
 
 	bool is_connected_to_service() const;
 	ConnectionStatus get_connection_status() const;
+
+	// Instance management
+	void set_instance_id(int p_id);
+	int get_instance_id() const { return instance_id; }
+	void set_initial_session_id(const String &p_session_id);
+	String get_session_id() const { return session_id; }
 };

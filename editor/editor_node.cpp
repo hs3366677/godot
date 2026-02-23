@@ -91,7 +91,7 @@
 #include "editor/docks/history_dock.h"
 #include "editor/docks/import_dock.h"
 #include "editor/ai_asset_generation_manager.h"
-#include "editor/plugins/ai_assistant/ai_assistant_dock.h"
+#include "editor/plugins/ai_assistant/ai_assistant_manager.h"
 #include "editor/docks/inspector_dock.h"
 #include "editor/docks/scene_tree_dock.h"
 #include "editor/docks/signals_dock.h"
@@ -9069,8 +9069,9 @@ EditorNode::EditorNode() {
 	history_dock = memnew(HistoryDock);
 	editor_dock_manager->add_dock(history_dock);
 
-	ai_assistant_dock = memnew(AIAssistantDock);
-	editor_dock_manager->add_dock(ai_assistant_dock);
+	ai_assistant_manager = memnew(AIAssistantManager);
+	ai_assistant_manager->create_primary_dock();
+	ai_assistant_manager->restore_state();
 
 	// AI Asset Generation Manager (singleton, not a dock)
 	AIAssetGenerationManager *ai_gen_manager = memnew(AIAssetGenerationManager);
@@ -9516,6 +9517,10 @@ EditorNode::~EditorNode() {
 	memdelete(editor_plugins_force_input_forwarding);
 	memdelete(progress_hb);
 	memdelete(project_upgrade_tool);
+	if (ai_assistant_manager) {
+		ai_assistant_manager->save_state();
+		memdelete(ai_assistant_manager);
+	}
 	memdelete(editor_dock_manager);
 
 	EditorSettings::destroy();
