@@ -142,5 +142,7 @@ public:
 
 	HBoxContainer *get_buttons_container();
 
+	bool request_screenshot(const Callable &p_callback);
+
 	EditorRunBar();
 };

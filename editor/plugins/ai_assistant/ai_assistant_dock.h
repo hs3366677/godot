@@ -191,6 +191,7 @@ private:
 	ScrollContainer *attachment_scroll = nullptr;
 	HBoxContainer *attachment_preview_container = nullptr;
 	Button *attach_image_button = nullptr;
+	Button *screenshot_button = nullptr;
 	EditorFileDialog *image_file_dialog = nullptr;
 
 	// Slash command autocomplete (inline, non-modal)
@@ -305,6 +306,7 @@ private:
 
 	// Image attachment handling
 	void _on_attach_image_pressed();
+	void _on_screenshot_pressed();
 	void _on_image_files_selected(const PackedStringArray &p_paths);
 	void _on_files_dropped_on_dock(const PackedStringArray &p_files);
 	void _on_remove_attachment(int p_index);
@@ -417,10 +419,16 @@ private:
 	void _on_question_custom_submitted();
 	void _send_question_reply(const String &p_request_id, const Array &p_answers);
 
-	// Screenshot capture (for godot_screenshot tool)
-	Ref<Image> _get_game_viewport_image();
+	// Screenshot capture (for godot_screenshot tool and 📷 button)
+	static AIAssistantDock *singleton;
 	bool _add_attachment_from_raw_data(const String &p_filename, const String &p_mime, const Vector<uint8_t> &p_data);
 	void _post_screenshot_result(const String &p_id, const String &p_b64);
+	// Instance callbacks
+	void _on_screenshot_for_tool(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id);
+	void _on_screenshot_for_button(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
+	// Static callbacks — bypass ObjectDB checks, dispatch to singleton
+	static void _screenshot_for_button_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
+	static void _screenshot_for_tool_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id);
 
 	// Auto-verification
 	void _on_game_stopped();

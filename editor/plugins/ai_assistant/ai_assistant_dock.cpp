@@ -26,7 +26,6 @@
 #include "scene/gui/line_edit.h"
 #include "scene/gui/separator.h"
 #include "scene/resources/style_box_flat.h"
-#include "scene/main/viewport.h"
 #include "scene/resources/image_texture.h"
 #include "servers/display/display_server.h"
 
@@ -58,6 +57,7 @@ void AIAssistantDock::_bind_methods() {
 
 	// Image attachments
 	ClassDB::bind_method(D_METHOD("_on_attach_image_pressed"), &AIAssistantDock::_on_attach_image_pressed);
+	ClassDB::bind_method(D_METHOD("_on_screenshot_pressed"), &AIAssistantDock::_on_screenshot_pressed);
 	ClassDB::bind_method(D_METHOD("_on_image_files_selected", "paths"), &AIAssistantDock::_on_image_files_selected);
 	ClassDB::bind_method(D_METHOD("_on_files_dropped_on_dock", "files"), &AIAssistantDock::_on_files_dropped_on_dock);
 
@@ -106,7 +106,10 @@ void AIAssistantDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_question_custom_submitted"), &AIAssistantDock::_on_question_custom_submitted);
 }
 
+AIAssistantDock *AIAssistantDock::singleton = nullptr;
+
 AIAssistantDock::AIAssistantDock() {
+	singleton = this;
 	set_title(TTR("AI Assistant"));
 	set_icon_name(SNAME("Node"));
 	set_default_slot(DOCK_SLOT_RIGHT_UL);
@@ -116,6 +119,9 @@ AIAssistantDock::AIAssistantDock() {
 }
 
 AIAssistantDock::~AIAssistantDock() {
+	if (singleton == this) {
+		singleton = nullptr;
+	}
 }
 
 void AIAssistantDock::_setup_ui() {
@@ -310,6 +316,11 @@ void AIAssistantDock::_setup_ui() {
 	attach_image_button->set_text("Img+");
 	attach_image_button->set_tooltip_text("Attach image(s) - PNG, JPG, WebP, GIF (max 10 MB each)");
 	button_container->add_child(attach_image_button);
+
+	screenshot_button = memnew(Button);
+	screenshot_button->set_text(U"\U0001F4F7");
+	screenshot_button->set_tooltip_text(TTR("Capture game screenshot and send for AI analysis (game must be running)"));
+	button_container->add_child(screenshot_button);
 
 	send_button = memnew(Button);
 	send_button->set_text("Send (Enter)");
@@ -655,6 +666,7 @@ void AIAssistantDock::_connect_signals() {
 	// Image attachment signals
 	attach_image_button->connect("pressed", Callable(this, "_on_attach_image_pressed"));
 	image_file_dialog->connect("files_selected", Callable(this, "_on_image_files_selected"));
+	screenshot_button->connect("pressed", Callable(this, "_on_screenshot_pressed"));
 
 	// Sticky header scroll tracking
 	chat_scroll->get_v_scroll_bar()->connect("value_changed", Callable(this, "_on_chat_scroll_changed"));
@@ -2017,7 +2029,7 @@ void AIAssistantDock::_rebuild_attachment_previews() {
 	while (attachment_preview_container->get_child_count() > 0) {
 		Node *child = attachment_preview_container->get_child(0);
 		attachment_preview_container->remove_child(child);
-		memdelete(child);
+		child->queue_free();
 	}
 
 	if (pending_attachments.is_empty()) {
@@ -2046,7 +2058,7 @@ void AIAssistantDock::_rebuild_attachment_previews() {
 		remove_btn->set_tooltip_text("Remove " + att.filename);
 		remove_btn->set_custom_minimum_size(Size2(0, 18));
 		remove_btn->add_theme_font_size_override("font_size", 10);
-		remove_btn->connect("pressed", Callable(this, "_on_remove_attachment").bind(i));
+		remove_btn->connect("pressed", Callable(this, "_on_remove_attachment").bind(i), CONNECT_DEFERRED);
 		item->add_child(remove_btn);
 
 		attachment_preview_container->add_child(item);
@@ -3408,55 +3420,89 @@ void AIAssistantDock::_execute_godot_command(const String &p_action, const Dicti
 			_add_system_message("[Editor] No scene open to reload.");
 		}
 	} else if (p_action == "screenshot") {
-		// Capture game viewport and POST result to OpenCode for the godot_screenshot tool
+		// Request screenshot from the running game via debugger protocol
 		String screenshot_id = p_params.get("id", "");
 		if (screenshot_id.is_empty()) {
 			return;
 		}
 
-		Ref<Image> img = _get_game_viewport_image();
-		if (img.is_null() || img->is_empty()) {
+		if (!EditorRunBar::get_singleton()->is_playing()) {
 			_add_system_message("[Screenshot] No game running — start the game first.");
-			// POST an error so the tool doesn't hang waiting
 			_post_screenshot_result(screenshot_id, "");
 			return;
 		}
 
-		Vector<uint8_t> png_data = img->save_png_to_buffer();
-		String b64 = CryptoCore::b64_encode_str(png_data.ptr(), png_data.size());
-		_post_screenshot_result(screenshot_id, b64);
+		bool ok = EditorRunBar::get_singleton()->request_screenshot(
+				callable_mp_static(&AIAssistantDock::_screenshot_for_tool_static).bind(screenshot_id));
+
+		if (!ok) {
+			_add_system_message("[Screenshot] Could not request screenshot — game may not be embedded.");
+			_post_screenshot_result(screenshot_id, "");
+		}
 	}
 }
 
 // === Screenshot Capture ===
 
-Ref<Image> AIAssistantDock::_get_game_viewport_image() {
-	// Try 2D viewport first
-	SubViewport *vp2d = EditorInterface::get_singleton()->get_editor_viewport_2d();
-	if (vp2d) {
-		Ref<ViewportTexture> tex = vp2d->get_texture();
-		if (tex.is_valid()) {
-			Ref<Image> img = tex->get_image();
-			if (img.is_valid() && !img->is_empty() && img->get_width() > 1) {
-				return img;
-			}
-		}
+// Static callbacks — bypass ObjectDB validity checks, dispatch to singleton instance.
+void AIAssistantDock::_screenshot_for_button_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect) {
+	if (singleton) {
+		singleton->_on_screenshot_for_button(p_w, p_h, p_path, p_rect);
 	}
-
-	// Fall back to 3D viewport
-	SubViewport *vp3d = EditorInterface::get_singleton()->get_editor_viewport_3d(0);
-	if (vp3d) {
-		Ref<ViewportTexture> tex = vp3d->get_texture();
-		if (tex.is_valid()) {
-			Ref<Image> img = tex->get_image();
-			if (img.is_valid() && !img->is_empty() && img->get_width() > 1) {
-				return img;
-			}
-		}
-	}
-
-	return Ref<Image>();
 }
+
+void AIAssistantDock::_screenshot_for_tool_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id) {
+	if (singleton) {
+		singleton->_on_screenshot_for_tool(p_w, p_h, p_path, p_rect, p_id);
+	}
+}
+
+void AIAssistantDock::_on_screenshot_pressed() {
+	if (!EditorRunBar::get_singleton()->is_playing()) {
+		_add_system_message("[Screenshot] No game running — press F5 to run the game first.");
+		return;
+	}
+
+	bool ok = EditorRunBar::get_singleton()->request_screenshot(
+			callable_mp_static(&AIAssistantDock::_screenshot_for_button_static));
+
+	if (!ok) {
+		_add_system_message("[Screenshot] Could not request screenshot. Make sure the game is running in embedded mode.");
+	}
+}
+
+void AIAssistantDock::_on_screenshot_for_tool(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id) {
+	Ref<Image> img = Image::load_from_file(p_path);
+	if (img.is_null() || img->is_empty()) {
+		_post_screenshot_result(p_id, "");
+		return;
+	}
+	Vector<uint8_t> png_data = img->save_png_to_buffer();
+	String b64 = CryptoCore::b64_encode_str(png_data.ptr(), png_data.size());
+	_post_screenshot_result(p_id, b64);
+}
+
+void AIAssistantDock::_on_screenshot_for_button(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect) {
+	if (p_path.is_empty()) {
+		_add_system_message("[Screenshot] Failed: no screenshot returned from game.");
+		return;
+	}
+	Ref<Image> img = Image::load_from_file(p_path);
+	if (img.is_null() || img->is_empty()) {
+		_add_system_message("[Screenshot] Failed to load screenshot.");
+		return;
+	}
+	Vector<uint8_t> png_data = img->save_png_to_buffer();
+	if (!_add_attachment_from_raw_data("screenshot.png", "image/png", png_data)) {
+		_add_system_message("[Screenshot] Failed to attach screenshot.");
+		return;
+	}
+	if (prompt_input->get_text().is_empty()) {
+		prompt_input->set_text("Analyze this screenshot for visual design issues and fix them.");
+	}
+	prompt_input->grab_focus();
+}
+
 
 bool AIAssistantDock::_add_attachment_from_raw_data(const String &p_filename, const String &p_mime, const Vector<uint8_t> &p_data) {
 	if (p_data.is_empty()) {
