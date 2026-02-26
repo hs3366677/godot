@@ -38,16 +38,10 @@ void AIAssistantDock::_bind_methods() {
 	// UI handlers
 	ClassDB::bind_method(D_METHOD("_on_send_pressed"), &AIAssistantDock::_on_send_pressed);
 	ClassDB::bind_method(D_METHOD("_on_stop_pressed"), &AIAssistantDock::_on_stop_pressed);
-	ClassDB::bind_method(D_METHOD("_on_clear_pressed"), &AIAssistantDock::_on_clear_pressed);
-	ClassDB::bind_method(D_METHOD("_on_verify_pressed"), &AIAssistantDock::_on_verify_pressed);
-	ClassDB::bind_method(D_METHOD("_on_reconnect_pressed"), &AIAssistantDock::_on_reconnect_pressed);
 	ClassDB::bind_method(D_METHOD("_on_settings_pressed"), &AIAssistantDock::_on_settings_pressed);
 	ClassDB::bind_method(D_METHOD("_on_new_instance_pressed"), &AIAssistantDock::_on_new_instance_pressed);
-	ClassDB::bind_method(D_METHOD("_on_template_selected", "id"), &AIAssistantDock::_on_template_selected);
 	ClassDB::bind_method(D_METHOD("_on_prompt_input_gui_input", "event"), &AIAssistantDock::_on_prompt_input_gui_input);
 	ClassDB::bind_method(D_METHOD("_on_prompt_text_changed"), &AIAssistantDock::_on_prompt_text_changed);
-	ClassDB::bind_method(D_METHOD("_on_plan_mode_toggled", "enabled"), &AIAssistantDock::_on_plan_mode_toggled);
-	ClassDB::bind_method(D_METHOD("_on_auto_accept_toggled", "enabled"), &AIAssistantDock::_on_auto_accept_toggled);
 	ClassDB::bind_method(D_METHOD("_on_chat_scroll_changed", "value"), &AIAssistantDock::_on_chat_scroll_changed);
 	ClassDB::bind_method(D_METHOD("_scroll_chat_to_bottom"), &AIAssistantDock::_scroll_chat_to_bottom);
 	ClassDB::bind_method(D_METHOD("_on_tool_meta_clicked", "meta"), &AIAssistantDock::_on_tool_meta_clicked);
@@ -73,6 +67,16 @@ void AIAssistantDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_question_http_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_question_http_request_completed);
 	ClassDB::bind_method(D_METHOD("_on_session_list_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_session_list_completed);
 	ClassDB::bind_method(D_METHOD("_on_session_history_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_session_history_completed);
+	ClassDB::bind_method(D_METHOD("_on_session_history_list_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_session_history_list_completed);
+	ClassDB::bind_method(D_METHOD("_on_session_history_pressed"), &AIAssistantDock::_on_session_history_pressed);
+	ClassDB::bind_method(D_METHOD("_on_session_item_clicked", "index"), &AIAssistantDock::_on_session_item_clicked);
+	ClassDB::bind_method(D_METHOD("_on_session_new_pressed"), &AIAssistantDock::_on_session_new_pressed);
+	ClassDB::bind_method(D_METHOD("_on_session_delete_pressed", "index"), &AIAssistantDock::_on_session_delete_pressed);
+	ClassDB::bind_method(D_METHOD("_on_session_delete_confirmed"), &AIAssistantDock::_on_session_delete_confirmed);
+	ClassDB::bind_method(D_METHOD("_on_session_rename_pressed", "index"), &AIAssistantDock::_on_session_rename_pressed);
+	ClassDB::bind_method(D_METHOD("_on_session_rename_confirmed"), &AIAssistantDock::_on_session_rename_confirmed);
+	ClassDB::bind_method(D_METHOD("_on_session_rename_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_session_rename_completed);
+	ClassDB::bind_method(D_METHOD("cleanup_before_close"), &AIAssistantDock::cleanup_before_close);
 
 	// Settings
 	ClassDB::bind_method(D_METHOD("_on_replicate_test_pressed"), &AIAssistantDock::_on_replicate_test_pressed);
@@ -130,50 +134,59 @@ void AIAssistantDock::_setup_ui() {
 	main_container->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	add_child(main_container);
 
-	// Header
-	header_container = memnew(HBoxContainer);
-	main_container->add_child(header_container);
-
-	title_label = memnew(Label);
-	title_label->set_text("Makabaka AI");
-	title_label->add_theme_font_size_override("font_size", 16);
-	header_container->add_child(title_label);
-
-	header_container->add_spacer();
-
-	connection_indicator = memnew(ColorRect);
-	connection_indicator->set_custom_minimum_size(Size2(12, 12));
-	connection_indicator->set_color(Color(0.5, 0.5, 0.5));
-	header_container->add_child(connection_indicator);
-
-	// Toolbar
+	// Single toolbar row: session | model | settings | + | connection indicator
 	toolbar_container = memnew(HBoxContainer);
 	main_container->add_child(toolbar_container);
 
-	template_button = memnew(MenuButton);
-	template_button->set_text("Templates");
-	toolbar_container->add_child(template_button);
+	session_history_button = memnew(Button);
+	session_history_button->set_text("Sessions");
+	session_history_button->set_tooltip_text(TTR("Browse and switch between conversation sessions"));
+	toolbar_container->add_child(session_history_button);
 
-	PopupMenu *template_popup = template_button->get_popup();
-	template_popup->add_item("Platformer 2D", 0);
-	template_popup->add_item("Tower Defense", 1);
-	template_popup->add_item("RPG Top-Down", 2);
-	template_popup->add_item("Shooter Top-Down", 3);
-	template_popup->add_separator();
-	template_popup->add_item("Empty Project", 99);
+	// Custom popup panel for session list.
+	session_popup = memnew(PopupPanel);
+	session_popup->set_min_size(Size2(300, 0));
+	add_child(session_popup);
 
-	clear_button = memnew(Button);
-	clear_button->set_text("Clear");
-	toolbar_container->add_child(clear_button);
+	ScrollContainer *session_scroll = memnew(ScrollContainer);
+	session_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	session_scroll->set_custom_minimum_size(Size2(300, 200));
+	session_popup->add_child(session_scroll);
 
-	verify_button = memnew(Button);
-	verify_button->set_text("Verify");
-	verify_button->set_tooltip_text("Read game logs and verify with AI");
-	toolbar_container->add_child(verify_button);
+	session_popup_list = memnew(VBoxContainer);
+	session_popup_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	session_scroll->add_child(session_popup_list);
 
-	reconnect_button = memnew(Button);
-	reconnect_button->set_text("Connect");
-	toolbar_container->add_child(reconnect_button);
+	// Delete confirmation dialog for sessions.
+	session_delete_confirm = memnew(ConfirmationDialog);
+	session_delete_confirm->set_title(TTR("Delete Session"));
+	session_delete_confirm->set_text(TTR("Are you sure you want to delete this session?"));
+	add_child(session_delete_confirm);
+
+	// Rename dialog for sessions.
+	session_rename_dialog = memnew(AcceptDialog);
+	session_rename_dialog->set_title(TTR("Rename Session"));
+	session_rename_dialog->set_ok_button_text(TTR("Rename"));
+	VBoxContainer *rename_vbox = memnew(VBoxContainer);
+	session_rename_dialog->add_child(rename_vbox);
+	Label *rename_label = memnew(Label);
+	rename_label->set_text(TTR("New session title:"));
+	rename_vbox->add_child(rename_label);
+	session_rename_input = memnew(LineEdit);
+	session_rename_input->set_custom_minimum_size(Size2(300, 0));
+	rename_vbox->add_child(session_rename_input);
+	add_child(session_rename_dialog);
+
+	// HTTPRequest for session rename.
+	session_rename_http = memnew(HTTPRequest);
+	add_child(session_rename_http);
+
+	// Model selector (two-level submenu: Provider → Models)
+	model_button = memnew(MenuButton);
+	model_button->set_text("Select Model");
+	toolbar_container->add_child(model_button);
+
+	toolbar_container->add_spacer();
 
 	settings_button = memnew(Button);
 	settings_button->set_text("Settings");
@@ -186,53 +199,15 @@ void AIAssistantDock::_setup_ui() {
 	new_instance_button->set_tooltip_text(TTR("Open new AI Assistant"));
 	toolbar_container->add_child(new_instance_button);
 
-	toolbar_container->add_spacer();
+	connection_indicator = memnew(ColorRect);
+	connection_indicator->set_custom_minimum_size(Size2(12, 12));
+	connection_indicator->set_color(Color(0.5, 0.5, 0.5));
+	toolbar_container->add_child(connection_indicator);
 
-	status_label = memnew(Label);
-	status_label->set_text("Disconnected");
-	status_label->add_theme_font_size_override("font_size", 11);
-	toolbar_container->add_child(status_label);
-
-	// Model selector (two-level submenu: Provider → Models)
-	model_button = memnew(MenuButton);
-	model_button->set_text("Select Model");
-	model_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	main_container->add_child(model_button);
-
-	// Tab container for Chat and Logs
-	tab_container = memnew(TabContainer);
-	tab_container->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	main_container->add_child(tab_container);
-
-	// === Chat Tab ===
+	// === Chat Area (directly in main container, no tabs) ===
 	chat_tab = memnew(VBoxContainer);
-	chat_tab->set_name("Chat");
-	tab_container->add_child(chat_tab);
-
-	// Chat toolbar with mode toggles and auto-scroll
-	HBoxContainer *chat_toolbar = memnew(HBoxContainer);
-	chat_tab->add_child(chat_toolbar);
-
-	// Plan mode toggle
-	plan_mode_toggle = memnew(CheckButton);
-	plan_mode_toggle->set_text("Plan");
-	plan_mode_toggle->set_tooltip_text("Plan mode: AI will create a plan before making changes");
-	plan_mode_toggle->set_pressed(false);
-	chat_toolbar->add_child(plan_mode_toggle);
-
-	// Auto-accept edits toggle
-	auto_accept_toggle = memnew(CheckButton);
-	auto_accept_toggle->set_text("Auto-accept");
-	auto_accept_toggle->set_tooltip_text("Auto-accept: Automatically approve file edits");
-	auto_accept_toggle->set_pressed(false);
-	chat_toolbar->add_child(auto_accept_toggle);
-
-	chat_toolbar->add_spacer();
-
-	chat_auto_scroll = memnew(CheckButton);
-	chat_auto_scroll->set_text("Auto-scroll");
-	chat_auto_scroll->set_pressed(true);
-	chat_toolbar->add_child(chat_auto_scroll);
+	chat_tab->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	main_container->add_child(chat_tab);
 
 	// Sticky header — pins current user question at top of chat scroll
 	sticky_header = memnew(PanelContainer);
@@ -426,6 +401,10 @@ void AIAssistantDock::_setup_ui() {
 	session_list_http_request = memnew(HTTPRequest);
 	add_child(session_list_http_request);
 
+	// HTTP Request node for session history menu
+	session_history_list_http = memnew(HTTPRequest);
+	add_child(session_history_list_http);
+
 	// HTTP Request node for OAuth auth flow
 	http_auth_request = memnew(HTTPRequest);
 	add_child(http_auth_request);
@@ -608,9 +587,11 @@ void AIAssistantDock::_setup_ui() {
 }
 
 void AIAssistantDock::_setup_logs_tab() {
+	// Logs panel is hidden but still in tree so log entries can be appended.
 	logs_tab = memnew(VBoxContainer);
 	logs_tab->set_name("Logs");
-	tab_container->add_child(logs_tab);
+	logs_tab->set_visible(false);
+	main_container->add_child(logs_tab);
 
 	// Logs toolbar
 	logs_toolbar = memnew(HBoxContainer);
@@ -653,12 +634,8 @@ void AIAssistantDock::_connect_signals() {
 	// Chat signals
 	send_button->connect("pressed", Callable(this, "_on_send_pressed"));
 	stop_button->connect("pressed", Callable(this, "_on_stop_pressed"));
-	clear_button->connect("pressed", Callable(this, "_on_clear_pressed"));
-	verify_button->connect("pressed", Callable(this, "_on_verify_pressed"));
-	reconnect_button->connect("pressed", Callable(this, "_on_reconnect_pressed"));
 	settings_button->connect("pressed", Callable(this, "_on_settings_pressed"));
 	new_instance_button->connect("pressed", Callable(this, "_on_new_instance_pressed"));
-	template_button->get_popup()->connect("id_pressed", Callable(this, "_on_template_selected"));
 	prompt_input->connect("gui_input", Callable(this, "_on_prompt_input_gui_input"));
 	prompt_input->connect("text_changed", Callable(this, "_on_prompt_text_changed"));
 	http_request->connect("request_completed", Callable(this, "_on_http_request_completed"));
@@ -670,10 +647,6 @@ void AIAssistantDock::_connect_signals() {
 
 	// Sticky header scroll tracking
 	chat_scroll->get_v_scroll_bar()->connect("value_changed", Callable(this, "_on_chat_scroll_changed"));
-
-	// Mode toggles
-	plan_mode_toggle->connect("toggled", Callable(this, "_on_plan_mode_toggled"));
-	auto_accept_toggle->connect("toggled", Callable(this, "_on_auto_accept_toggled"));
 
 	// Processing indicator
 	processing_timer->connect("timeout", Callable(this, "_on_processing_timer_timeout"));
@@ -706,6 +679,13 @@ void AIAssistantDock::_connect_signals() {
 
 	// Session list signals (for finding existing sessions)
 	session_list_http_request->connect("request_completed", Callable(this, "_on_session_list_completed"));
+
+	// Session history panel signals
+	session_history_list_http->connect("request_completed", Callable(this, "_on_session_history_list_completed"));
+	session_history_button->connect("pressed", Callable(this, "_on_session_history_pressed"));
+	session_delete_confirm->connect("confirmed", Callable(this, "_on_session_delete_confirmed"));
+	session_rename_dialog->connect("confirmed", Callable(this, "_on_session_rename_confirmed"));
+	session_rename_http->connect("request_completed", Callable(this, "_on_session_rename_completed"));
 
 	// Game stop signal for auto-verification
 	EditorRunBar *run_bar = EditorRunBar::get_singleton();
@@ -940,6 +920,7 @@ void AIAssistantDock::_send_message(const String &p_content) {
 		return;
 	}
 
+	has_user_message = true;
 	pending_request = REQUEST_MESSAGE;
 	_update_status("Processing...", Color(1, 1, 0));
 	_show_processing();
@@ -974,14 +955,19 @@ void AIAssistantDock::_send_message(const String &p_content) {
 		}
 	}
 
-	// Build the user message with mode prefixes
+	// Inject project context (worldbuilding + visual bible) on every message for ALL instances.
+	// The context is dynamic — it changes based on whether docs/worldbuilding.md exists.
+	{
+		String project_context = AIAssistantManager::get_singleton()->build_project_context();
+		if (!project_context.is_empty()) {
+			Dictionary ctx_part;
+			ctx_part["type"] = "text";
+			ctx_part["text"] = project_context;
+			parts.push_back(ctx_part);
+		}
+	}
+
 	String message_content = p_content;
-	if (is_plan_mode) {
-		message_content = "[PLAN MODE] Before making any changes, first create a detailed plan and present it for approval. Do not make changes until the plan is approved.\n\n" + message_content;
-	}
-	if (is_auto_accept) {
-		message_content = "[AUTO-ACCEPT] You have permission to automatically apply all file edits without asking for confirmation.\n\n" + message_content;
-	}
 
 	Dictionary text_part;
 	text_part["type"] = "text";
@@ -1120,10 +1106,17 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 			if (p_code == 200 && response_data.has("id")) {
 				session_id = response_data["id"];
 				coding_standards_injected = false;
+				has_user_message = false;
 				connection_status = CONNECTED;
 				_update_status("Connected", Color(0, 1, 0));
 				_update_connection_indicator();
-				reconnect_button->set_text("Disconnect");
+	
+				session_history_button->set_text("New Session");
+				// Re-enable input (may have been disabled in "no session" state).
+				prompt_input->set_editable(true);
+				prompt_input->set_placeholder(TTR("Type a message..."));
+				send_button->set_disabled(false);
+
 				_add_system_message("Connected to AI service! Session: " + session_id.substr(0, 8) + "...");
 				_add_system_message("Project directory: " + _get_project_directory());
 
@@ -1155,6 +1148,7 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 		case REQUEST_DELETE_SESSION: {
 			// Session deleted on server, now reset and create new one
 			session_id = "";
+			has_user_message = false;
 			coding_standards_injected = false;
 			_add_system_message("Previous session deleted. Creating new session...");
 			_create_session();
@@ -1173,6 +1167,8 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 					print_line("AIAssistant: Loaded saved model from config: " + saved_model);
 				}
 			}
+			// Restore status — config loading is done.
+			_update_status("Connected", Color(0, 1, 0));
 			// Always fetch available providers/models after config (even if config failed)
 			_fetch_providers();
 		} break;
@@ -1255,52 +1251,21 @@ void AIAssistantDock::_on_stop_pressed() {
 	_add_system_message("AI processing stopped.");
 }
 
-void AIAssistantDock::_on_plan_mode_toggled(bool p_enabled) {
-	is_plan_mode = p_enabled;
-	if (p_enabled) {
-		_add_system_message("[Mode] Plan mode enabled - AI will create a plan before making changes.");
-	} else {
-		_add_system_message("[Mode] Plan mode disabled.");
-	}
-}
-
-void AIAssistantDock::_on_auto_accept_toggled(bool p_enabled) {
-	is_auto_accept = p_enabled;
-	if (p_enabled) {
-		_add_system_message("[Mode] Auto-accept enabled - File edits will be automatically approved.");
-	} else {
-		_add_system_message("[Mode] Auto-accept disabled.");
-	}
-}
-
 void AIAssistantDock::_on_clear_pressed() {
-	// Clear UI immediately
-	while (chat_container->get_child_count() > 0) {
-		Node *child = chat_container->get_child(0);
-		chat_container->remove_child(child);
-		memdelete(child);
+	// If the current session has no user messages, delete it (no value in keeping it).
+	// Otherwise, leave it in session history for later access.
+	if (!has_user_message && !session_id.is_empty()) {
+		_fire_and_forget_delete_session(session_id);
 	}
-	chat_history.clear();
-	_clear_tool_tracking();
-	_clear_attachments();
-	user_message_indices.clear();
-	collapse_buttons.clear();
-	collapsed_turns.clear();
-	user_message_texts.clear();
-	sticky_header->set_visible(false);
-	sticky_current_turn_index = -1;
+
+	_clear_chat_ui();
 	_add_system_message("Chat cleared. Creating new session...");
 
-	// Delete the current session on the server (if it exists)
-	if (!session_id.is_empty()) {
-		pending_request = REQUEST_DELETE_SESSION;
-		String url = service_url + "/session/" + session_id;
-		http_request->request(url, _get_headers_with_directory(), HTTPClient::METHOD_DELETE);
-	} else {
-		// No session to delete, just reset and create new one
-		coding_standards_injected = false;
-		_create_session();
-	}
+	// Reset and create new session.
+	session_id = "";
+	has_user_message = false;
+	coding_standards_injected = false;
+	_create_session();
 }
 
 void AIAssistantDock::_on_settings_pressed() {
@@ -1669,51 +1634,6 @@ void AIAssistantDock::_on_providers_status_completed(int p_result, int p_code, c
 		msg += "\n";
 	}
 	_add_ai_message(msg);
-}
-
-void AIAssistantDock::_on_reconnect_pressed() {
-	if (connection_status == CONNECTED) {
-		// Stop log polling
-		if (logs_poll_timer) {
-			logs_poll_timer->stop();
-		}
-		// Stop command polling
-		if (command_poll_timer) {
-			command_poll_timer->stop();
-		}
-		// Stop question polling
-		if (question_poll_timer) {
-			question_poll_timer->stop();
-		}
-		// Hide any pending question dialog
-		_hide_question_dialog();
-		// Disconnect
-		session_id = "";
-		coding_standards_injected = false;
-		connection_status = DISCONNECTED;
-		_update_status("Disconnected", Color(0.5, 0.5, 0.5));
-		_update_connection_indicator();
-		reconnect_button->set_text("Connect");
-		_add_system_message("Disconnected from AI service.");
-	} else {
-		// Connect
-		_add_system_message("Connecting to " + service_url + "...");
-		_check_service_health();
-	}
-}
-
-void AIAssistantDock::_on_template_selected(int p_id) {
-	String templates[] = { "platformer_2d", "tower_defense", "rpg_topdown", "shooter_topdown" };
-
-	if (p_id < 4) {
-		_add_system_message("Loading template: " + templates[p_id]);
-		// TODO: Implement template loading via AI
-		if (connection_status == CONNECTED) {
-			_send_message("Create a " + templates[p_id] + " game template");
-		}
-	} else if (p_id == 99) {
-		_add_system_message("Starting with empty project");
-	}
 }
 
 void AIAssistantDock::_on_prompt_text_changed() {
@@ -2220,9 +2140,7 @@ void AIAssistantDock::_add_message(const String &p_sender, const String &p_text,
 }
 
 void AIAssistantDock::_scroll_chat_to_bottom() {
-	if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
-		chat_scroll->set_v_scroll(INT32_MAX);
-	}
+	chat_scroll->set_v_scroll(INT32_MAX);
 }
 
 void AIAssistantDock::_toggle_turn_collapse(int p_user_msg_index) {
@@ -2403,7 +2321,8 @@ void AIAssistantDock::_add_ai_message(const String &p_text) {
 }
 
 void AIAssistantDock::_add_system_message(const String &p_text) {
-	_add_message("System", p_text, Color(1.0, 1.0, 0.6));
+	// System messages go to the Logs tab only (not shown in chat).
+	_add_log_entry("SYSTEM", p_text, Color(1.0, 1.0, 0.6));
 }
 
 void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p_tool_name, const String &p_status, const Dictionary &p_details) {
@@ -2590,7 +2509,9 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 		status_icon = String::utf8("\u2713"); // checkmark
 		status_color = "66ff66";
 	} else if (p_status == "running" || p_status == "pending") {
-		status_icon = "...";
+		// Show live progress title from ctx.metadata() if available
+		String live_title = p_details.get("title", "");
+		status_icon = live_title.is_empty() ? "..." : live_title;
 		status_color = "ffff66";
 	} else if (p_status == "error") {
 		status_icon = String::utf8("\u2717"); // X mark
@@ -2784,10 +2705,8 @@ void AIAssistantDock::_on_tool_meta_clicked(const Variant &p_meta) {
 }
 
 void AIAssistantDock::_update_status(const String &p_text, const Color &p_color) {
-	if (status_label) {
-		status_label->set_text(p_text);
-		status_label->add_theme_color_override("font_color", p_color);
-	}
+	// Status is logged but not shown in UI (connection indicator dot is sufficient).
+	_add_log_entry("STATUS", p_text, p_color);
 }
 
 void AIAssistantDock::_show_processing() {
@@ -3733,9 +3652,16 @@ void AIAssistantDock::_find_existing_session() {
 		connection_status = CONNECTED;
 		_update_connection_indicator();
 		_update_status("Connected (restored)", Color(0.5, 1, 0.5));
+		session_history_button->set_text("Restored Session");
 		_add_system_message("Reconnected to previous session.");
 		_load_session_history();
 		_fetch_providers();
+		return;
+	}
+
+	// Docks that must not share sessions (e.g. Art Director) always create a fresh one.
+	if (create_new_session_if_none) {
+		_create_session();
 		return;
 	}
 
@@ -3796,7 +3722,8 @@ void AIAssistantDock::_on_session_list_completed(int p_result, int p_code, const
 	connection_status = CONNECTED;
 	_update_status("Connected", Color(0, 1, 0));
 	_update_connection_indicator();
-	reconnect_button->set_text("Disconnect");
+
+	session_history_button->set_text(title.length() > 25 ? title.substr(0, 22) + "..." : title);
 
 	_add_system_message("Resumed session: " + title);
 	_add_system_message("Session ID: " + session_id.substr(0, 8) + "...");
@@ -3842,6 +3769,7 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 	// Clean up the temporary HTTPRequest
 	HTTPRequest *sender = Object::cast_to<HTTPRequest>(get_child(get_child_count() - 1));
 	if (sender && sender != http_request && sender != session_list_http_request &&
+		sender != session_history_list_http &&
 		sender != model_http_request && sender != http_auth_request &&
 		sender != logs_http_request &&
 		sender != stream_http_request && sender != command_http_request &&
@@ -3889,6 +3817,7 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 		String role = info.get("role", "");
 
 		if (role == "user") {
+			has_user_message = true;
 			// Extract text from user message parts
 			for (int j = 0; j < parts.size(); j++) {
 				Dictionary part = parts[j];
@@ -4774,5 +4703,380 @@ void AIAssistantDock::_on_close_instance_pressed() {
 	AIAssistantManager *manager = AIAssistantManager::get_singleton();
 	if (manager) {
 		manager->close_instance(instance_id);
+	}
+}
+
+// === Session History & Cleanup Functions ===
+
+void AIAssistantDock::_clear_chat_ui() {
+	while (chat_container->get_child_count() > 0) {
+		Node *child = chat_container->get_child(0);
+		chat_container->remove_child(child);
+		memdelete(child);
+	}
+	chat_history.clear();
+	_clear_tool_tracking();
+	_clear_attachments();
+	user_message_indices.clear();
+	collapse_buttons.clear();
+	collapsed_turns.clear();
+	user_message_texts.clear();
+	sticky_header->set_visible(false);
+	sticky_current_turn_index = -1;
+}
+
+void AIAssistantDock::_fire_and_forget_delete_session(const String &p_session_id) {
+	// Attach a temporary HTTPRequest to the editor main screen so it survives
+	// even if this dock is destroyed before the request completes.
+	Node *parent = EditorInterface::get_singleton()->get_editor_main_screen();
+	if (!parent) {
+		return;
+	}
+	HTTPRequest *req = memnew(HTTPRequest);
+	parent->add_child(req);
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+	String url = service_url + "/session/" + p_session_id;
+	req->request(url, _get_headers_with_directory(), HTTPClient::METHOD_DELETE);
+}
+
+void AIAssistantDock::cleanup_before_close() {
+	// Auto-delete empty sessions (no user messages) when closing the tab.
+	if (!has_user_message && !session_id.is_empty()) {
+		_fire_and_forget_delete_session(session_id);
+	}
+
+	// Stop all timers to prevent callbacks after destruction.
+	if (logs_poll_timer) {
+		logs_poll_timer->stop();
+	}
+	if (command_poll_timer) {
+		command_poll_timer->stop();
+	}
+	if (question_poll_timer) {
+		question_poll_timer->stop();
+	}
+	if (stream_poll_timer) {
+		stream_poll_timer->stop();
+	}
+	if (processing_timer) {
+		processing_timer->stop();
+	}
+	if (auth_poll_timer) {
+		auth_poll_timer->stop();
+	}
+}
+
+void AIAssistantDock::_on_session_history_pressed() {
+	if (connection_status != CONNECTED) {
+		return;
+	}
+
+	// Position the popup below the button.
+	Vector2 btn_pos = session_history_button->get_screen_position();
+	Vector2 btn_size = session_history_button->get_size();
+	session_popup->set_position(Vector2i(btn_pos.x, btn_pos.y + btn_size.y));
+	session_popup->popup();
+
+	// Fetch fresh session list.
+	_fetch_session_list();
+}
+
+void AIAssistantDock::_fetch_session_list() {
+	// Clear and show loading state.
+	while (session_popup_list->get_child_count() > 0) {
+		Node *child = session_popup_list->get_child(0);
+		session_popup_list->remove_child(child);
+		child->queue_free();
+	}
+
+	Label *loading = memnew(Label);
+	loading->set_text("Loading...");
+	loading->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	session_popup_list->add_child(loading);
+
+	String url = service_url + "/session?directory=" + _get_project_directory().uri_encode() + "&roots=true&limit=20";
+	session_history_list_http->cancel_request();
+	session_history_list_http->request(url, _get_headers_with_directory());
+}
+
+void AIAssistantDock::_on_session_history_list_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	// Clear loading state.
+	while (session_popup_list->get_child_count() > 0) {
+		Node *child = session_popup_list->get_child(0);
+		session_popup_list->remove_child(child);
+		child->queue_free();
+	}
+	cached_session_list.clear();
+
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		Label *err_label = memnew(Label);
+		err_label->set_text("[Failed to load sessions]");
+		session_popup_list->add_child(err_label);
+		return;
+	}
+
+	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	JSON json;
+	Error err = json.parse(response_text);
+
+	if (err != OK || json.get_data().get_type() != Variant::ARRAY) {
+		Label *err_label = memnew(Label);
+		err_label->set_text("[Invalid response]");
+		session_popup_list->add_child(err_label);
+		return;
+	}
+
+	Array sessions = json.get_data();
+
+	// "+ New Session" button at top.
+	Button *new_btn = memnew(Button);
+	new_btn->set_text("+ New Session");
+	new_btn->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	new_btn->connect("pressed", Callable(this, "_on_session_new_pressed"));
+	session_popup_list->add_child(new_btn);
+
+	if (!sessions.is_empty()) {
+		session_popup_list->add_child(memnew(HSeparator));
+	}
+
+	// Session rows: [label] [delete button]
+	for (int i = 0; i < sessions.size(); i++) {
+		Dictionary session = sessions[i];
+		cached_session_list.push_back(session);
+
+		String title = session.get("title", "Untitled");
+		String sid = session.get("id", "");
+
+		if (title.length() > 35) {
+			title = title.substr(0, 32) + "...";
+		}
+
+		// Format time.
+		Dictionary time_dict = session.get("time", Dictionary());
+		double updated_ms = time_dict.get("updated", 0.0);
+		String time_str;
+		if (updated_ms > 0) {
+			Dictionary datetime = Time::get_singleton()->get_datetime_dict_from_unix_time((int64_t)(updated_ms / 1000.0));
+			time_str = vformat("%02d/%02d %02d:%02d",
+				(int)datetime["month"], (int)datetime["day"],
+				(int)datetime["hour"], (int)datetime["minute"]);
+		}
+
+		HBoxContainer *row = memnew(HBoxContainer);
+		session_popup_list->add_child(row);
+
+		// Session button (click to switch).
+		Button *session_btn = memnew(Button);
+		String label = sid == session_id ? String(U"\u2713 ") + title : title;
+		if (!time_str.is_empty()) {
+			label += "  [" + time_str + "]";
+		}
+		session_btn->set_text(label);
+		session_btn->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		session_btn->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		session_btn->connect("pressed", Callable(this, "_on_session_item_clicked").bind(i));
+		row->add_child(session_btn);
+
+		// Rename button.
+		Button *rename_btn = memnew(Button);
+		rename_btn->set_text(U"\u270E");
+		rename_btn->set_tooltip_text("Rename this session");
+		rename_btn->set_custom_minimum_size(Size2(28, 0));
+		rename_btn->connect("pressed", Callable(this, "_on_session_rename_pressed").bind(i));
+		row->add_child(rename_btn);
+
+		// Delete button.
+		Button *del_btn = memnew(Button);
+		del_btn->set_text("-");
+		del_btn->set_tooltip_text("Delete this session");
+		del_btn->set_custom_minimum_size(Size2(28, 0));
+		del_btn->connect("pressed", Callable(this, "_on_session_delete_pressed").bind(i));
+		row->add_child(del_btn);
+	}
+
+	if (sessions.is_empty()) {
+		Label *empty_label = memnew(Label);
+		empty_label->set_text("[No sessions found]");
+		empty_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		session_popup_list->add_child(empty_label);
+	}
+}
+
+void AIAssistantDock::_on_session_new_pressed() {
+	session_popup->hide();
+
+	if (!has_user_message && !session_id.is_empty()) {
+		_fire_and_forget_delete_session(session_id);
+	}
+
+	_clear_chat_ui();
+	_add_system_message("Creating new session...");
+
+	session_id = "";
+	has_user_message = false;
+	coding_standards_injected = false;
+	_create_session();
+}
+
+void AIAssistantDock::_on_session_item_clicked(int p_index) {
+	session_popup->hide();
+
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	Dictionary session = cached_session_list[p_index];
+	String sid = session.get("id", "");
+	String title = session.get("title", "Untitled");
+
+	if (sid == session_id) {
+		return; // Already on this session.
+	}
+
+	_switch_to_session(sid, title);
+}
+
+void AIAssistantDock::_switch_to_session(const String &p_session_id, const String &p_title) {
+	// If current session is empty (no user messages), auto-delete it.
+	if (!has_user_message && !session_id.is_empty()) {
+		_fire_and_forget_delete_session(session_id);
+	}
+
+	_clear_chat_ui();
+
+	// Switch to new session.
+	session_id = p_session_id;
+	has_user_message = false;
+	coding_standards_injected = false;
+
+	// Re-enable input (may have been disabled in "no session" state).
+	prompt_input->set_editable(true);
+	prompt_input->set_placeholder(TTR("Type a message..."));
+	send_button->set_disabled(false);
+
+	String display_title = p_title.length() > 25 ? p_title.substr(0, 22) + "..." : p_title;
+	session_history_button->set_text(display_title);
+
+	_add_system_message("Switched to session: " + p_title);
+	_add_system_message("Session ID: " + session_id.substr(0, 8) + "...");
+
+	// Load chat history from the new session.
+	_load_session_history();
+}
+
+void AIAssistantDock::_on_session_delete_pressed(int p_index) {
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	session_popup->hide();
+
+	// Store which session is pending deletion.
+	session_pending_delete_index = p_index;
+
+	Dictionary session = cached_session_list[p_index];
+	String title = session.get("title", "Untitled");
+	session_delete_confirm->set_text(TTR("Delete session \"") + title + "\"?");
+	session_delete_confirm->popup_centered();
+}
+
+void AIAssistantDock::_on_session_delete_confirmed() {
+	int p_index = session_pending_delete_index;
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	Dictionary session = cached_session_list[p_index];
+	String sid = session.get("id", "");
+	String title = session.get("title", "Untitled");
+
+	if (sid.is_empty()) {
+		return;
+	}
+
+	// Fire-and-forget DELETE.
+	_fire_and_forget_delete_session(sid);
+
+	// If the deleted session is the current one, clear UI and enter "no session" state.
+	if (sid == session_id) {
+		_clear_chat_ui();
+
+		session_id = "";
+		has_user_message = false;
+		coding_standards_injected = false;
+
+		session_history_button->set_text("No Session");
+		prompt_input->set_editable(false);
+		prompt_input->set_placeholder(TTR("Select or create a session to start chatting..."));
+		send_button->set_disabled(true);
+	}
+
+	_add_system_message("Session \"" + title + "\" deleted.");
+
+	// Remove from cached list.
+	cached_session_list.remove_at(p_index);
+	session_pending_delete_index = -1;
+}
+
+void AIAssistantDock::_on_session_rename_pressed(int p_index) {
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	session_popup->hide();
+
+	session_pending_rename_index = p_index;
+
+	Dictionary session = cached_session_list[p_index];
+	String title = session.get("title", "Untitled");
+	session_rename_input->set_text(title);
+	session_rename_input->select_all();
+	session_rename_dialog->popup_centered();
+	session_rename_input->grab_focus();
+}
+
+void AIAssistantDock::_on_session_rename_confirmed() {
+	int p_index = session_pending_rename_index;
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	String new_title = session_rename_input->get_text().strip_edges();
+	if (new_title.is_empty()) {
+		return;
+	}
+
+	Dictionary session = cached_session_list[p_index];
+	String sid = session.get("id", "");
+	if (sid.is_empty()) {
+		return;
+	}
+
+	// Send PATCH request to rename session.
+	String url = service_url + "/session/" + sid;
+	Vector<String> headers = _get_headers_with_directory();
+
+	Dictionary body;
+	body["title"] = new_title;
+	String body_str = JSON::stringify(body);
+
+	session_rename_http->request(url, headers, HTTPClient::METHOD_PATCH, body_str);
+
+	// Optimistically update cached data and UI.
+	session["title"] = new_title;
+	cached_session_list.set(p_index, session);
+
+	if (sid == session_id) {
+		String display = new_title.length() > 25 ? new_title.substr(0, 22) + "..." : new_title;
+		session_history_button->set_text(display);
+	}
+
+	_add_system_message("Session renamed to \"" + new_title + "\".");
+	session_pending_rename_index = -1;
+}
+
+void AIAssistantDock::_on_session_rename_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		_add_system_message("Failed to rename session (HTTP " + String::num_int64(p_code) + ").");
 	}
 }

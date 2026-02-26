@@ -24,6 +24,7 @@
 #include "scene/gui/line_edit.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/panel_container.h"
+#include "scene/gui/popup.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/http_request.h"
 #include "scene/main/timer.h"
@@ -89,6 +90,8 @@ private:
 	// Instance management
 	int instance_id = 0;
 	String initial_session_id;
+	bool create_new_session_if_none = false; // When true, never steal another dock's session
+	bool has_user_message = false; // Track whether user has sent at least one message in this session
 	Button *new_instance_button = nullptr;
 	void _on_new_instance_pressed();
 	void _on_close_instance_pressed();
@@ -97,17 +100,10 @@ private:
 	VBoxContainer *main_container = nullptr;
 
 	// UI Components
-	HBoxContainer *header_container = nullptr;
-	Label *title_label = nullptr;
-	ColorRect *connection_indicator = nullptr;
-
 	HBoxContainer *toolbar_container = nullptr;
-	MenuButton *template_button = nullptr;
-	Button *clear_button = nullptr;
-	Button *verify_button = nullptr;
-	Button *reconnect_button = nullptr;
+	Button *session_history_button = nullptr;
 	Button *settings_button = nullptr;
-	Label *status_label = nullptr;
+	ColorRect *connection_indicator = nullptr;
 
 	// Settings dialog (asset provider configuration + prompt management)
 	AcceptDialog *settings_dialog = nullptr;
@@ -155,16 +151,10 @@ private:
 	AcceptDialog *auth_code_dialog = nullptr;
 	LineEdit *auth_code_input = nullptr;
 
-	// Tab container for Chat and Logs
-	TabContainer *tab_container = nullptr;
-
-	// Chat tab
+	// Chat area
 	VBoxContainer *chat_tab = nullptr;
 	ScrollContainer *chat_scroll = nullptr;
 	VBoxContainer *chat_container = nullptr;
-	CheckButton *chat_auto_scroll = nullptr;
-	CheckButton *plan_mode_toggle = nullptr;
-	CheckButton *auto_accept_toggle = nullptr;
 
 	// Collapse/expand for AI response turns
 	Vector<int> user_message_indices; // child indices in chat_container for each user message
@@ -204,8 +194,6 @@ private:
 	void _update_slash_hint_highlight();
 
 	// Mode flags
-	bool is_plan_mode = false;
-	bool is_auto_accept = false;
 	bool coding_standards_injected = false; // Reset per session
 
 	// Processing indicator (overlay on prompt_input top-right)
@@ -300,8 +288,6 @@ private:
 	void _on_send_pressed();
 	void _on_stop_pressed();
 	void _on_clear_pressed();
-	void _on_reconnect_pressed();
-	void _on_template_selected(int p_id);
 	void _on_prompt_input_gui_input(const Ref<InputEvent> &p_event);
 
 	// Image attachment handling
@@ -318,8 +304,6 @@ private:
 	String _encode_data_url(const String &p_mime, const Vector<uint8_t> &p_data) const;
 	bool _is_supported_image_extension(const String &p_extension) const;
 
-	void _on_plan_mode_toggled(bool p_enabled);
-	void _on_auto_accept_toggled(bool p_enabled);
 	void _on_settings_pressed();
 	void _on_replicate_test_pressed();
 	void _on_meshy_test_pressed();
@@ -460,6 +444,35 @@ private:
 	void _load_session_history();
 	void _on_session_history_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
+	// Session history panel (custom popup)
+	HTTPRequest *session_history_list_http = nullptr;
+	Vector<Dictionary> cached_session_list;
+	PopupPanel *session_popup = nullptr;
+	VBoxContainer *session_popup_list = nullptr;
+	void _clear_chat_ui();
+	void _on_session_history_pressed();
+	void _fetch_session_list();
+	void _on_session_history_list_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_session_item_clicked(int p_index);
+	void _on_session_new_pressed();
+	void _switch_to_session(const String &p_session_id, const String &p_title);
+	void _fire_and_forget_delete_session(const String &p_session_id);
+
+	// Session delete confirmation
+	ConfirmationDialog *session_delete_confirm = nullptr;
+	int session_pending_delete_index = -1;
+	void _on_session_delete_pressed(int p_index);
+	void _on_session_delete_confirmed();
+
+	// Session rename
+	AcceptDialog *session_rename_dialog = nullptr;
+	LineEdit *session_rename_input = nullptr;
+	int session_pending_rename_index = -1;
+	HTTPRequest *session_rename_http = nullptr;
+	void _on_session_rename_pressed(int p_index);
+	void _on_session_rename_confirmed();
+	void _on_session_rename_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+
 protected:
 	void _notification(int p_what);
 	static void _bind_methods();
@@ -478,5 +491,8 @@ public:
 	void set_instance_id(int p_id);
 	int get_instance_id() const { return instance_id; }
 	void set_initial_session_id(const String &p_session_id);
+	void set_create_new_session_if_none(bool p_create) { create_new_session_if_none = p_create; }
 	String get_session_id() const { return session_id; }
+	bool get_has_user_message() const { return has_user_message; }
+	void cleanup_before_close();
 };

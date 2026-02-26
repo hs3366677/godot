@@ -11,6 +11,8 @@
 #include "ai_assistant_dock.h"
 #include "editor/docks/editor_dock_manager.h"
 #include "editor/settings/editor_settings.h"
+#include "core/io/file_access.h"
+#include "core/config/project_settings.h"
 
 AIAssistantManager *AIAssistantManager::singleton = nullptr;
 
@@ -22,6 +24,7 @@ AIAssistantManager::~AIAssistantManager() {
 	// Close all extra instances (skip primary at index 0).
 	for (int i = instances.size() - 1; i > 0; i--) {
 		if (instances[i].dock) {
+			instances[i].dock->cleanup_before_close();
 			EditorDockManager::get_singleton()->remove_dock(instances[i].dock);
 			memdelete(instances[i].dock);
 		}
@@ -56,6 +59,7 @@ AIAssistantDock *AIAssistantManager::spawn_instance() {
 
 	AIAssistantDock *dock = memnew(AIAssistantDock);
 	dock->set_instance_id(id);
+	dock->set_create_new_session_if_none(true); // New tabs always get fresh sessions.
 	dock->set_title(vformat("AI Assistant #%d", id + 1));
 	dock->set_layout_key(vformat("AI Assistant #%d", id + 1));
 
@@ -79,6 +83,7 @@ void AIAssistantManager::close_instance(int p_instance_id) {
 	for (int i = 0; i < instances.size(); i++) {
 		if (instances[i].instance_id == p_instance_id) {
 			if (instances[i].dock) {
+				instances[i].dock->cleanup_before_close();
 				EditorDockManager::get_singleton()->remove_dock(instances[i].dock);
 				memdelete(instances[i].dock);
 			}
@@ -88,14 +93,69 @@ void AIAssistantManager::close_instance(int p_instance_id) {
 	}
 }
 
+String AIAssistantManager::build_project_context() const {
+	String context;
+
+	bool has_worldbuilding = FileAccess::exists("res://docs/worldbuilding.md");
+
+	if (!has_worldbuilding) {
+		// ── NO WORLDBUILDING: inform AI that worldbuilding is available ──
+		context =
+			"[PROJECT CONTEXT — NO WORLDBUILDING YET]\n\n"
+			"This project has no worldbuilding document yet (docs/worldbuilding.md not found).\n"
+			"If the user wants to create concept art, do art direction, or build their game world,\n"
+			"they should complete worldbuilding first.\n\n"
+			"When the user asks about art direction or concept art without worldbuilding:\n"
+			"- Suggest completing worldbuilding first via the /worldbuilding command\n"
+			"- Or guide them through 3 key questions:\n"
+			"  1. 'What is this world's biggest lie?' (the hidden truth)\n"
+			"  2. 'Why is the protagonist FORCED to act?' (personal stakes, not destiny)\n"
+			"  3. 'What is this world's most unique rule or currency?' (core mechanic)\n\n"
+			"CRITICAL: When generating worldbuilding options, they must be SPECIFIC, UNPRECEDENTED,\n"
+			"SURPRISING — concrete scenarios in one vivid sentence. NOT genre labels.\n"
+			"BAD: 'Dark fantasy setting' — GOOD: 'The gods died centuries ago but their rotting\n"
+			"corpses still hang in the sky, dripping divine ichor that mutates everything below'\n\n"
+			"After worldbuilding is complete, call godot_worldbuilding tool to save results,\n"
+			"then proceed to visual language and art direction.\n"
+			"DO NOT call godot_art_explore until worldbuilding is saved.\n";
+	} else {
+		// ── HAS WORLDBUILDING: inject existing world context ──
+		context = "[PROJECT CONTEXT]\n\n";
+
+		// Append worldbuilding content
+		Ref<FileAccess> wb = FileAccess::open("res://docs/worldbuilding.md", FileAccess::READ);
+		if (wb.is_valid()) {
+			context += "## Current Worldbuilding\n\n";
+			context += wb->get_as_text();
+			context += "\n\n";
+		}
+
+		// Append visual bible if exists
+		if (FileAccess::exists("res://docs/visual_bible.md")) {
+			Ref<FileAccess> vb = FileAccess::open("res://docs/visual_bible.md", FileAccess::READ);
+			if (vb.is_valid()) {
+				context += "## Current Visual Bible\n\n";
+				context += vb->get_as_text();
+				context += "\n\n";
+			}
+		}
+	}
+
+	return context;
+}
+
 void AIAssistantManager::save_state() {
 	if (!EditorSettings::get_singleton()) {
 		return;
 	}
 
 	// Save the number of extra instances and their session IDs.
+	// Skip primary (id 0) — it is always recreated.
 	Array saved;
 	for (int i = 1; i < instances.size(); i++) {
+		if (instances[i].instance_id <= 0) {
+			continue;
+		}
 		Dictionary entry;
 		entry["instance_id"] = instances[i].instance_id;
 		entry["session_id"] = instances[i].dock ? instances[i].dock->get_session_id() : instances[i].session_id;

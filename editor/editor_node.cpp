@@ -92,6 +92,7 @@
 #include "editor/docks/import_dock.h"
 #include "editor/ai_asset_generation_manager.h"
 #include "editor/plugins/ai_assistant/ai_assistant_manager.h"
+#include "editor/plugins/art_director/art_director_dock.h"
 #include "editor/docks/inspector_dock.h"
 #include "editor/docks/scene_tree_dock.h"
 #include "editor/docks/signals_dock.h"
@@ -9072,6 +9073,10 @@ EditorNode::EditorNode() {
 	ai_assistant_manager = memnew(AIAssistantManager);
 	ai_assistant_manager->create_primary_dock();
 	ai_assistant_manager->restore_state();
+
+	// Art Director — main screen tab (parallel to 2D/3D/Script)
+	ArtDirectorPlugin *art_director_plugin = memnew(ArtDirectorPlugin);
+	add_editor_plugin(art_director_plugin);
 
 	// AI Asset Generation Manager (singleton, not a dock)
 	AIAssetGenerationManager *ai_gen_manager = memnew(AIAssetGenerationManager);

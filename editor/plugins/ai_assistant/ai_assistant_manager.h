@@ -43,6 +43,8 @@ public:
 	void save_state();
 	void restore_state();
 
+	String build_project_context() const;
+
 	int get_instance_count() const { return instances.size(); }
 	bool can_spawn() const { return instances.size() < MAX_INSTANCES; }
 
