@@ -179,6 +179,7 @@ private:
 	HashSet<String> favorites;
 
 	Button *button_toggle_display_mode = nullptr;
+	Button *button_refresh = nullptr;
 	Button *button_file_list_display_mode = nullptr;
 	Button *button_hist_next = nullptr;
 	Button *button_hist_prev = nullptr;
@@ -363,6 +364,7 @@ private:
 	void _set_scanning_mode();
 	void _rescan();
 
+	void _on_refresh_pressed();
 	void _change_split_mode();
 	void _split_dragged(int p_offset);
 

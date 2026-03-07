@@ -9074,10 +9074,6 @@ EditorNode::EditorNode() {
 	ai_assistant_manager->create_primary_dock();
 	ai_assistant_manager->restore_state();
 
-	// Art Director — main screen tab (parallel to 2D/3D/Script)
-	ArtDirectorPlugin *art_director_plugin = memnew(ArtDirectorPlugin);
-	add_editor_plugin(art_director_plugin);
-
 	// AI Asset Generation Manager (singleton, not a dock)
 	AIAssetGenerationManager *ai_gen_manager = memnew(AIAssetGenerationManager);
 	add_child(ai_gen_manager);
@@ -9282,6 +9278,11 @@ EditorNode::EditorNode() {
 	} else {
 		print_verbose("Asset Library not available (due to using Web editor, or SSL support disabled).");
 	}
+
+	// Art Director — main screen tab. Registered AFTER built-in editors (2D/3D/Script/Game/AssetLib)
+	// so that the hardcoded EditorTable enum indices (EDITOR_2D=0, EDITOR_3D=1, etc.) remain valid.
+	ArtDirectorPlugin *art_director_plugin = memnew(ArtDirectorPlugin);
+	add_editor_plugin(art_director_plugin);
 
 	// More visually meaningful to have this later.
 	add_editor_plugin(memnew(AnimationPlayerEditorPlugin));

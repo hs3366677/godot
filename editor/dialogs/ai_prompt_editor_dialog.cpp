@@ -159,16 +159,6 @@ void AIPromptEditorDialog::_create_ui() {
 	random_seed_button->connect(SceneStringName(pressed), callable_mp(this, &AIPromptEditorDialog::_on_random_seed_pressed));
 	seed_container->add_child(random_seed_button);
 
-	Control *spacer = memnew(Control);
-	spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	seed_container->add_child(spacer);
-
-	// Transparent background option
-	transparent_bg_checkbox = memnew(CheckBox);
-	transparent_bg_checkbox->set_text(TTR("Remove white background (make transparent)"));
-	transparent_bg_checkbox->set_tooltip_text(TTR("Convert white/near-white pixels to transparent after generation"));
-	seed_container->add_child(transparent_bg_checkbox);
-
 	// Version info
 	version_label = memnew(Label);
 	seed_container->add_child(version_label);
@@ -383,11 +373,6 @@ void AIPromptEditorDialog::setup_for_asset(const String &p_path, Mode p_mode) {
 	int seed = original_metadata.get(AIAssetMetadata::KEY_SEED, -1);
 	seed_spinbox->set_value(seed);
 
-	// Load transparent_bg option from parameters
-	Dictionary params = original_metadata.get(AIAssetMetadata::KEY_PARAMETERS, Dictionary());
-	bool has_transparent_bg = params.get("transparent_bg", false);
-	transparent_bg_checkbox->set_pressed(has_transparent_bg);
-
 	// Update version preview
 	_update_version_preview();
 
@@ -417,10 +402,6 @@ String AIPromptEditorDialog::get_selected_model() const {
 
 int AIPromptEditorDialog::get_seed() const {
 	return (int)seed_spinbox->get_value();
-}
-
-bool AIPromptEditorDialog::get_transparent_bg() const {
-	return transparent_bg_checkbox->is_pressed();
 }
 
 AIPromptEditorDialog::AIPromptEditorDialog() {

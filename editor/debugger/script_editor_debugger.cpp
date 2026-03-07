@@ -959,6 +959,25 @@ void ScriptEditorDebugger::_msg_evaluation_return(uint64_t p_thread_id, const Ar
 	expression_evaluator->add_value(p_data);
 }
 
+void ScriptEditorDebugger::set_ai_eval_callback(const Callable &p_callback) {
+	ai_eval_callback = p_callback;
+}
+
+void ScriptEditorDebugger::request_ai_eval(const String &p_expression, const String &p_eval_id, const Callable &p_callback) {
+	ai_eval_callback = p_callback;
+	Array msg = { p_expression, p_eval_id };
+	_put_msg("ai:eval", msg);
+}
+
+void ScriptEditorDebugger::_msg_ai_eval_return(uint64_t p_thread_id, const Array &p_data) {
+	// p_data: [eval_id, value_string, error_string]
+	if (ai_eval_callback.is_valid()) {
+		Callable cb = ai_eval_callback;
+		ai_eval_callback = Callable(); // One-shot.
+		cb.call(p_data);
+	}
+}
+
 void ScriptEditorDebugger::_msg_window_title(uint64_t p_thread_id, const Array &p_data) {
 	ERR_FAIL_COND(p_data.size() != 1);
 	emit_signal(SNAME("remote_window_title_changed"), p_data[0]);
@@ -1023,6 +1042,7 @@ void ScriptEditorDebugger::_init_parse_message_handlers() {
 	parse_message_handlers["performance:profile_names"] = &ScriptEditorDebugger::_msg_performance_profile_names;
 	parse_message_handlers["filesystem:update_file"] = &ScriptEditorDebugger::_msg_filesystem_update_file;
 	parse_message_handlers["evaluation_return"] = &ScriptEditorDebugger::_msg_evaluation_return;
+	parse_message_handlers["ai:eval_return"] = &ScriptEditorDebugger::_msg_ai_eval_return;
 	parse_message_handlers["window:title"] = &ScriptEditorDebugger::_msg_window_title;
 	parse_message_handlers["request_embed_suspend_toggle"] = &ScriptEditorDebugger::_msg_embed_suspend_toggle;
 	parse_message_handlers["request_embed_next_frame"] = &ScriptEditorDebugger::_msg_embed_next_frame;

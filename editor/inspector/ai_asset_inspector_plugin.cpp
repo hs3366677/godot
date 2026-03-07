@@ -111,6 +111,38 @@ void AIAssetInfoControl::_create_ui() {
 
 	add_child(memnew(HSeparator));
 
+	// 1b. Usage section (read-only, shown only when usage metadata exists)
+	usage_container = memnew(VBoxContainer);
+	usage_container->set_visible(false);
+	add_child(usage_container);
+
+	Label *usage_header = memnew(Label);
+	usage_header->set_text(TTR("Usage (immutable)"));
+	usage_header->add_theme_font_size_override(SceneStringName(font_size), 13);
+	usage_container->add_child(usage_header);
+
+	usage_role_label = memnew(Label);
+	usage_role_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	usage_container->add_child(usage_role_label);
+
+	usage_dimensions_label = memnew(Label);
+	usage_dimensions_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	usage_container->add_child(usage_dimensions_label);
+
+	usage_scene_label = memnew(Label);
+	usage_scene_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	usage_container->add_child(usage_scene_label);
+
+	usage_node_path_label = memnew(Label);
+	usage_node_path_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	usage_container->add_child(usage_node_path_label);
+
+	usage_extras_label = memnew(Label);
+	usage_extras_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	usage_container->add_child(usage_extras_label);
+
+	usage_container->add_child(memnew(HSeparator));
+
 	// 2. Prompt (editable TextEdit)
 	prompt_title = memnew(Label);
 	prompt_title->set_text(TTR("Prompt:"));
@@ -173,15 +205,6 @@ void AIAssetInfoControl::_create_ui() {
 	random_seed_button->set_text(TTR("Random"));
 	random_seed_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_random_seed_pressed));
 	seed_container->add_child(random_seed_button);
-
-	Control *spacer2 = memnew(Control);
-	spacer2->set_h_size_flags(SIZE_EXPAND_FILL);
-	seed_container->add_child(spacer2);
-
-	transparent_bg_checkbox = memnew(CheckBox);
-	transparent_bg_checkbox->set_text(TTR("Transparent BG"));
-	transparent_bg_checkbox->set_tooltip_text(TTR("Convert white/near-white pixels to transparent after generation"));
-	seed_container->add_child(transparent_bg_checkbox);
 
 	add_child(memnew(HSeparator));
 
@@ -339,6 +362,65 @@ void AIAssetInfoControl::_update_ui() {
 	origin_label->set_text(origin_text);
 	origin_label->add_theme_color_override("font_color", badge_color);
 
+	// Usage section (read-only)
+	Dictionary usage = metadata.get(AIAssetMetadata::KEY_USAGE, Dictionary());
+	if (!usage.is_empty()) {
+		usage_container->show();
+
+		String role = usage.get("role", "");
+		usage_role_label->set_text(vformat(TTR("Role: %s"), role));
+		usage_role_label->set_visible(!role.is_empty());
+
+		int w = (int)usage.get("width", 0);
+		int h = (int)usage.get("height", 0);
+		bool has_transparent = usage.has("transparent_bg");
+		bool transparent = has_transparent ? (bool)usage.get("transparent_bg", false) : false;
+		if (w > 0 && h > 0) {
+			String dim_text = vformat(TTR("Size: %dx%d"), w, h);
+			if (has_transparent) {
+				dim_text += vformat("\n" + TTR("Transparent: %s"), transparent ? TTR("Yes") : TTR("No"));
+			}
+			usage_dimensions_label->set_text(dim_text);
+			usage_dimensions_label->show();
+		} else if (has_transparent) {
+			usage_dimensions_label->set_text(vformat(TTR("Transparent: %s"), transparent ? TTR("Yes") : TTR("No")));
+			usage_dimensions_label->show();
+		} else {
+			usage_dimensions_label->hide();
+		}
+
+		String scene = usage.get("scene", "");
+		usage_scene_label->set_text(vformat(TTR("Scene: %s"), scene));
+		usage_scene_label->set_visible(!scene.is_empty());
+
+		String node_path = usage.get("node_path", "");
+		usage_node_path_label->set_text(vformat(TTR("Node: %s"), node_path));
+		usage_node_path_label->set_visible(!node_path.is_empty());
+
+		// Extras: scale, tiling, animation_frames
+		Vector<String> extras;
+		String scale = usage.get("scale", "");
+		if (!scale.is_empty()) {
+			extras.push_back(vformat("scale: %s", scale));
+		}
+		String tiling = usage.get("tiling", "none");
+		if (tiling != "none") {
+			extras.push_back(vformat("tiling: %s", tiling));
+		}
+		int frames = (int)usage.get("animation_frames", 0);
+		if (frames > 0) {
+			extras.push_back(vformat("frames: %d", frames));
+		}
+		if (!extras.is_empty()) {
+			usage_extras_label->set_text(String(", ").join(extras));
+			usage_extras_label->show();
+		} else {
+			usage_extras_label->hide();
+		}
+	} else {
+		usage_container->hide();
+	}
+
 	// Populate prompt fields
 	String prompt = metadata.get(AIAssetMetadata::KEY_PROMPT, "");
 	prompt_edit->set_text(prompt);
@@ -361,10 +443,6 @@ void AIAssetInfoControl::_update_ui() {
 	// Seed
 	int seed = (int)metadata.get(AIAssetMetadata::KEY_SEED, -1);
 	seed_spinbox->set_value(seed);
-
-	// Transparent BG
-	Dictionary params = metadata.get(AIAssetMetadata::KEY_PARAMETERS, Dictionary());
-	transparent_bg_checkbox->set_pressed((bool)params.get("transparent_bg", false));
 
 	// Version
 	int version = (int)metadata.get(AIAssetMetadata::KEY_VERSION, 0);
@@ -395,11 +473,6 @@ void AIAssetInfoControl::_update_ui() {
 	ai_assist_container->set_visible(has_prompt);
 	seed_container->set_visible(has_prompt);
 
-	// Hide transparent BG for 3D model assets (only relevant for 2D textures)
-	String asset_type = metadata.get(AIAssetMetadata::KEY_ASSET_TYPE, "");
-	bool is_3d = (asset_type == "model" || asset_type == "mesh" || asset_type == "scene" || asset_path.ends_with(".glb"));
-	transparent_bg_checkbox->set_visible(!is_3d);
-
 	// Show/hide action buttons based on origin
 	generate_button->set_visible(origin == AIAssetMetadata::ORIGIN_PLACEHOLDER);
 	quick_regen_button->set_visible(origin == AIAssetMetadata::ORIGIN_GENERATED);
@@ -421,7 +494,6 @@ void AIAssetInfoControl::_set_editing_enabled(bool p_enabled) {
 	model_selector->set_disabled(!p_enabled);
 	seed_spinbox->set_editable(p_enabled);
 	random_seed_button->set_disabled(!p_enabled);
-	transparent_bg_checkbox->set_disabled(!p_enabled);
 	instruction_edit->set_editable(p_enabled);
 	refine_button->set_disabled(!p_enabled);
 	generate_button->set_disabled(!p_enabled);
@@ -450,9 +522,6 @@ void AIAssetInfoControl::_populate_from_version(const Dictionary &p_version_meta
 
 	seed_spinbox->set_value((int)p_version_meta.get(AIAssetMetadata::KEY_SEED, -1));
 
-	Dictionary params = p_version_meta.get(AIAssetMetadata::KEY_PARAMETERS, Dictionary());
-	transparent_bg_checkbox->set_pressed((bool)params.get("transparent_bg", false));
-
 	int ver = (int)p_version_meta.get(AIAssetMetadata::KEY_VERSION, 0);
 	version_label->set_text(vformat(TTR("Version: %d (historical)"), ver));
 }
@@ -463,14 +532,6 @@ void AIAssetInfoControl::_save_fields_to_metadata() {
 	asset_meta[AIAssetMetadata::KEY_NEGATIVE_PROMPT] = get_negative_prompt();
 	asset_meta[AIAssetMetadata::KEY_MODEL] = get_selected_model();
 	asset_meta[AIAssetMetadata::KEY_SEED] = get_seed();
-
-	Dictionary params = asset_meta.get(AIAssetMetadata::KEY_PARAMETERS, Dictionary());
-	if (get_transparent_bg()) {
-		params["transparent_bg"] = true;
-	} else {
-		params.erase("transparent_bg");
-	}
-	asset_meta[AIAssetMetadata::KEY_PARAMETERS] = params;
 
 	AIAssetMetadata::set_metadata(asset_path, asset_meta);
 	metadata = asset_meta;
@@ -511,6 +572,7 @@ void AIAssetInfoControl::_on_models_received(int p_result, int p_code, const Pac
 	model_selector->clear();
 
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		print_line(vformat("[AIInspector] Models request failed: result=%d code=%d — using fallback 'default'", p_result, p_code));
 		model_selector->add_item("default", 0);
 		return;
 	}
@@ -575,6 +637,9 @@ void AIAssetInfoControl::_on_models_received(int p_result, int p_code, const Pac
 	if (select_idx >= 0) {
 		model_selector->select(select_idx);
 	}
+
+	print_line(vformat("[AIInspector] Models loaded: %d models, current='%s' provider='%s' selected_idx=%d",
+			model_selector->get_item_count(), current_model, asset_provider, select_idx));
 }
 
 void AIAssetInfoControl::_on_refine_pressed() {
@@ -710,8 +775,10 @@ void AIAssetInfoControl::_on_generate_pressed() {
 		return;
 	}
 	_save_fields_to_metadata();
+	String sel_model = get_selected_model();
+	print_line(vformat("[AIInspector] Generate pressed: path='%s' model='%s' seed=%d", asset_path, sel_model, get_seed()));
 	AIAssetGenerationManager::get_singleton()->generate_with_params(
-			asset_path, get_prompt(), get_negative_prompt(), get_selected_model(), get_seed());
+			asset_path, get_prompt(), get_negative_prompt(), sel_model, get_seed());
 }
 
 void AIAssetInfoControl::_on_quick_regen_pressed() {
@@ -719,8 +786,10 @@ void AIAssetInfoControl::_on_quick_regen_pressed() {
 		return;
 	}
 	_save_fields_to_metadata();
+	String sel_model = get_selected_model();
+	print_line(vformat("[AIInspector] Quick regen pressed: path='%s' model='%s'", asset_path, sel_model));
 	AIAssetGenerationManager::get_singleton()->generate_with_params(
-			asset_path, get_prompt(), get_negative_prompt(), get_selected_model(), -1);
+			asset_path, get_prompt(), get_negative_prompt(), sel_model, -1);
 }
 
 void AIAssetInfoControl::_on_enhance_pressed() {
@@ -794,8 +863,6 @@ void AIAssetInfoControl::_on_history_item_selected(int p_index) {
 		prompt_edit->set_text(metadata.get(AIAssetMetadata::KEY_PROMPT, ""));
 		negative_prompt_edit->set_text(metadata.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, ""));
 		seed_spinbox->set_value((int)metadata.get(AIAssetMetadata::KEY_SEED, -1));
-		Dictionary params = metadata.get(AIAssetMetadata::KEY_PARAMETERS, Dictionary());
-		transparent_bg_checkbox->set_pressed((bool)params.get("transparent_bg", false));
 		int ver = (int)metadata.get(AIAssetMetadata::KEY_VERSION, 0);
 		version_label->set_text(vformat(TTR("Version: %d"), ver));
 		_set_editing_enabled(true);
@@ -871,10 +938,6 @@ String AIAssetInfoControl::get_selected_model() const {
 
 int AIAssetInfoControl::get_seed() const {
 	return (int)seed_spinbox->get_value();
-}
-
-bool AIAssetInfoControl::get_transparent_bg() const {
-	return transparent_bg_checkbox->is_pressed();
 }
 
 AIAssetInfoControl::AIAssetInfoControl() {

@@ -68,7 +68,7 @@ public:
 	static const char *KEY_SOURCE_ASSET;
 	static const char *KEY_TRANSFORM;
 	static const char *KEY_ASSET_TYPE;
-	static const char *KEY_GAME_CONTEXT;
+	static const char *KEY_USAGE;
 	static const char *KEY_CREATED_AT;
 	static const char *KEY_CREATED_BY;
 	static const char *KEY_HISTORY;
@@ -86,7 +86,7 @@ public:
 			const String &p_provider,
 			const String &p_model,
 			const Dictionary &p_parameters = Dictionary(),
-			const String &p_game_context = String());
+			const Dictionary &p_usage = Dictionary());
 
 	static Dictionary create_generation_metadata(
 			const String &p_prompt,

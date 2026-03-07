@@ -11,8 +11,10 @@
 #include "ai_assistant_dock.h"
 #include "editor/docks/editor_dock_manager.h"
 #include "editor/settings/editor_settings.h"
+#include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/config/project_settings.h"
+#include "core/os/os.h"
 
 AIAssistantManager *AIAssistantManager::singleton = nullptr;
 
@@ -46,7 +48,10 @@ AIAssistantDock *AIAssistantManager::create_primary_dock() {
 	instances.push_back(info);
 	next_instance_id = 1;
 
-	EditorDockManager::get_singleton()->add_dock(dock);
+	EditorDockManager *dm = EditorDockManager::get_singleton();
+	dm->add_dock(dock);
+	// Make AI Assistant the selected tab in its dock slot.
+	dm->open_dock(dock, true);
 	return dock;
 }
 
@@ -97,27 +102,14 @@ String AIAssistantManager::build_project_context() const {
 	String context;
 
 	bool has_worldbuilding = FileAccess::exists("res://docs/worldbuilding.md");
+	bool has_game_design = FileAccess::exists("res://docs/game_design.md");
 
 	if (!has_worldbuilding) {
 		// ── NO WORLDBUILDING: inform AI that worldbuilding is available ──
-		context =
-			"[PROJECT CONTEXT — NO WORLDBUILDING YET]\n\n"
-			"This project has no worldbuilding document yet (docs/worldbuilding.md not found).\n"
-			"If the user wants to create concept art, do art direction, or build their game world,\n"
-			"they should complete worldbuilding first.\n\n"
-			"When the user asks about art direction or concept art without worldbuilding:\n"
-			"- Suggest completing worldbuilding first via the /worldbuilding command\n"
-			"- Or guide them through 3 key questions:\n"
-			"  1. 'What is this world's biggest lie?' (the hidden truth)\n"
-			"  2. 'Why is the protagonist FORCED to act?' (personal stakes, not destiny)\n"
-			"  3. 'What is this world's most unique rule or currency?' (core mechanic)\n\n"
-			"CRITICAL: When generating worldbuilding options, they must be SPECIFIC, UNPRECEDENTED,\n"
-			"SURPRISING — concrete scenarios in one vivid sentence. NOT genre labels.\n"
-			"BAD: 'Dark fantasy setting' — GOOD: 'The gods died centuries ago but their rotting\n"
-			"corpses still hang in the sky, dripping divine ichor that mutates everything below'\n\n"
-			"After worldbuilding is complete, call godot_worldbuilding tool to save results,\n"
-			"then proceed to visual language and art direction.\n"
-			"DO NOT call godot_art_explore until worldbuilding is saved.\n";
+		context = "[PROJECT CONTEXT — NEW PROJECT]\n\n";
+		context += "This project has no worldbuilding document yet.\n";
+		context += "If the user wants to create a game, suggest starting with the /create-game workflow.\n";
+		context += "If the user wants art direction or concept art, suggest /worldbuilding first.\n\n";
 	} else {
 		// ── HAS WORLDBUILDING: inject existing world context ──
 		context = "[PROJECT CONTEXT]\n\n";
@@ -137,6 +129,70 @@ String AIAssistantManager::build_project_context() const {
 				context += "## Current Visual Bible\n\n";
 				context += vb->get_as_text();
 				context += "\n\n";
+			}
+		}
+
+		// Append game design if exists
+		if (has_game_design) {
+			Ref<FileAccess> gd = FileAccess::open("res://docs/game_design.md", FileAccess::READ);
+			if (gd.is_valid()) {
+				context += "## Current Game Design\n\n";
+				context += gd->get_as_text();
+				context += "\n\n";
+			}
+		}
+	}
+
+	// ── Append available skills ──
+	String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+	String skills_dir = exe_dir.path_join("..").path_join("..").path_join("docs").path_join("skills").simplify_path();
+
+	Ref<DirAccess> dir = DirAccess::open(skills_dir);
+	if (dir.is_valid()) {
+		Vector<String> skill_entries;
+		dir->list_dir_begin();
+		String entry = dir->get_next();
+		while (!entry.is_empty()) {
+			if (dir->current_is_dir() && entry != "." && entry != "..") {
+				String skill_path = skills_dir.path_join(entry).path_join("SKILL.md");
+				Ref<FileAccess> f = FileAccess::open(skill_path, FileAccess::READ);
+				if (f.is_valid()) {
+					String raw = f->get_as_text();
+					// Parse description from frontmatter
+					String desc = entry;
+					if (raw.begins_with("---")) {
+						int end_idx = raw.find("---", 3);
+						if (end_idx >= 0) {
+							String frontmatter = raw.substr(3, end_idx - 3);
+							PackedStringArray lines = frontmatter.split("\n");
+							for (int i = 0; i < lines.size(); i++) {
+								String line = lines[i].strip_edges();
+								if (line.begins_with("description:")) {
+									desc = line.substr(12).strip_edges();
+									break;
+								}
+							}
+						}
+					}
+					skill_entries.push_back("- /" + entry + ": " + desc);
+				}
+			}
+			entry = dir->get_next();
+		}
+		dir->list_dir_end();
+
+		if (skill_entries.size() > 0) {
+			context += "[AVAILABLE SKILLS]\n";
+			context += "The user can invoke these workflows via slash commands, or you can auto-detect\n";
+			context += "when the user's request matches a skill and follow it automatically.\n\n";
+			for (int i = 0; i < skill_entries.size(); i++) {
+				context += skill_entries[i] + "\n";
+			}
+			context += "\n";
+
+			if (!has_worldbuilding) {
+				context += "This is a new/empty project. If the user asks to create a game,\n";
+				context += "follow the /create-game skill workflow automatically.\n";
 			}
 		}
 	}

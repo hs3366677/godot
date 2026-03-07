@@ -13,15 +13,12 @@
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
-#include "scene/gui/line_edit.h"
 #include "scene/gui/option_button.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/margin_container.h"
-#include "scene/gui/split_container.h"
-#include "scene/gui/text_edit.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/http_request.h"
 #include "scene/main/timer.h"
@@ -53,27 +50,13 @@ class ArtDirectorPanel : public PanelContainer {
 
 	// ── Model selection ──────────────────────────────────────────────────
 	OptionButton *exploration_model_picker = nullptr;
-	OptionButton *batch_model_picker = nullptr;
-
-	// ── Batch Production section ─────────────────────────────────────────
-	OptionButton *batch_reference_picker = nullptr;
-	LineEdit *batch_output_dir_input = nullptr;
-	TextEdit *batch_prompts_edit = nullptr;
-	Button *batch_generate_button = nullptr;
-	Label *batch_progress_label = nullptr;
-	HBoxContainer *batch_results_gallery = nullptr;
 
 	// ── HTTP infrastructure ──────────────────────────────────────────────
 	HTTPRequest *profile_http_request = nullptr;
 	HTTPRequest *images_http_request = nullptr;
 	HTTPRequest *models_http_request = nullptr;
 	HTTPRequest *set_ref_http_request = nullptr;
-	HTTPRequest *batch_http_request = nullptr;
-	HTTPRequest *batch_poll_request = nullptr;
-	Timer *batch_poll_timer = nullptr;
 	Timer *gallery_refresh_timer = nullptr;
-	String current_batch_id;
-	bool batch_poll_in_progress = false;
 	bool images_request_in_progress = false;
 
 	String service_url = "http://localhost:4096";
@@ -82,11 +65,17 @@ class ArtDirectorPanel : public PanelContainer {
 	struct ThumbInfo {
 		String res_path;
 		String category; // "exploration" or "cornerstone"
+		String label;    // short display name (from metadata, cornerstone only)
+		String tooltip;  // full subject description for hover
 		Ref<ImageTexture> texture;
 	};
 	Vector<ThumbInfo> exploration_thumbs;
 	Vector<ThumbInfo> cornerstone_thumbs;
-	Vector<ThumbInfo> all_thumbs;
+
+	// Double-click tracking for thumbnails
+	uint64_t last_thumb_click_time = 0;
+	String last_thumb_click_category;
+	int last_thumb_click_index = -1;
 
 	// ── Internal helpers ─────────────────────────────────────────────────
 	void _setup_ui();
@@ -94,7 +83,6 @@ class ArtDirectorPanel : public PanelContainer {
 	void _refresh_images();
 	void _load_thumbnail(const String &p_abs_path, ThumbInfo &r_info);
 	void _rebuild_gallery(HBoxContainer *p_gallery, const Vector<ThumbInfo> &p_thumbs, const String &p_category);
-	void _rebuild_reference_picker();
 
 	// Internal helpers (continued)
 	void _refresh_models();
@@ -105,8 +93,6 @@ class ArtDirectorPanel : public PanelContainer {
 	void _on_images_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_models_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_set_ref_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-	void _on_batch_started(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-	void _on_batch_poll(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
 	// UI callbacks
 	void _on_exploration_thumb_pressed(int p_index);
@@ -115,8 +101,6 @@ class ArtDirectorPanel : public PanelContainer {
 	void _on_set_reference_pressed();
 	void _on_exploration_refresh_pressed();
 	void _on_cornerstone_refresh_pressed();
-	void _on_batch_generate_pressed();
-	void _on_batch_poll_timeout();
 	void _on_gallery_refresh_timeout();
 
 	String _get_project_root() const;
@@ -130,7 +114,6 @@ public:
 	static const int THUMB_SIZE = 120; // Larger since we have the full main screen
 
 	String get_exploration_model() const;
-	String get_batch_model() const;
 
 	ArtDirectorPanel();
 	~ArtDirectorPanel() = default;

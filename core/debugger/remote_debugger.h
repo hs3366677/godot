@@ -106,6 +106,7 @@ private:
 
 	Error _profiler_capture(const String &p_cmd, const Array &p_data, bool &r_captured);
 	Error _core_capture(const String &p_cmd, const Array &p_data, bool &r_captured);
+	Error _ai_capture(const String &p_cmd, const Array &p_data, bool &r_captured);
 
 	template <typename T>
 	void _bind_profiler(const String &p_name, T *p_prof);

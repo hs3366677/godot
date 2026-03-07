@@ -128,6 +128,7 @@ private:
 
 	// Model selector (two-level submenu: Provider → Models)
 	MenuButton *model_button = nullptr;
+	CheckButton *thinking_toggle = nullptr;
 	Vector<PopupMenu *> provider_submenus;
 	HTTPRequest *model_http_request = nullptr;
 	ProviderRequestType provider_request_type = PROVIDER_REQUEST_NONE;
@@ -172,10 +173,12 @@ private:
 	HBoxContainer *button_container = nullptr;
 	TextEdit *prompt_input = nullptr;
 	Button *send_button = nullptr;
-	Button *stop_button = nullptr;
+	bool is_processing = false; // true when AI is thinking (send button becomes stop)
+	bool user_scrolled_up = false; // true when user has scrolled away from bottom
+	bool suppress_scroll_tracking = false; // true during programmatic scrolls
 
 	// Image attachments
-	static const int MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+	static const int MAX_IMAGE_SIZE_BYTES = 3 * 1024 * 1024 + 800 * 1024; // ~3.8 MB raw => ~5 MB base64 (Anthropic limit)
 	static const int THUMBNAIL_SIZE = 64;
 	Vector<AttachmentInfo> pending_attachments;
 	ScrollContainer *attachment_scroll = nullptr;
@@ -193,6 +196,18 @@ private:
 	void _on_slash_hint_pressed(int p_id);
 	void _update_slash_hint_highlight();
 
+	// Skill system
+	struct SkillInfo {
+		String name;
+		String description;
+		String auto_detect;            // Regex keywords for auto-detection from message text
+		String auto_detect_attachment; // Trigger on attachment type: "image", etc.
+		String content;                // Full SKILL.md content (after frontmatter)
+	};
+	Vector<SkillInfo> available_skills;
+	void _load_skills();
+	String _get_active_skill_content(const String &p_user_message, bool p_has_image_attachment = false) const;
+
 	// Mode flags
 	bool coding_standards_injected = false; // Reset per session
 
@@ -200,6 +215,7 @@ private:
 	Label *processing_label = nullptr;
 	Timer *processing_timer = nullptr;
 	int processing_dots = 0;
+	String current_tool_name; // Currently running tool (for title display)
 
 	// Streaming updates (poll for message parts during processing)
 	HTTPRequest *stream_http_request = nullptr;
@@ -207,6 +223,10 @@ private:
 	String current_message_id;
 	int last_part_count = 0;
 	bool stream_request_in_progress = false;
+	int stream_empty_poll_count = 0; // Count consecutive empty polls for stale session detection
+	String ignore_assistant_message_id; // Skip this message ID during polling (set after abort/stop)
+	String compaction_summary_message_id; // The compaction summary message ID (to skip on completion)
+	String compaction_summary_text; // Full summary text for detail popup
 
 	// Track tool UI elements by part ID for status updates
 	HashMap<String, RichTextLabel *> tool_containers;
@@ -287,6 +307,7 @@ private:
 	// UI handlers
 	void _on_send_pressed();
 	void _on_stop_pressed();
+	void _on_send_or_stop_pressed();
 	void _on_clear_pressed();
 	void _on_prompt_input_gui_input(const Ref<InputEvent> &p_event);
 
@@ -295,6 +316,7 @@ private:
 	void _on_screenshot_pressed();
 	void _on_image_files_selected(const PackedStringArray &p_paths);
 	void _on_files_dropped_on_dock(const PackedStringArray &p_files);
+	void _on_file_removed(const String &p_file);
 	void _on_remove_attachment(int p_index);
 	bool _add_attachment_from_file(const String &p_path);
 	bool _add_attachment_from_clipboard_image();
@@ -344,6 +366,7 @@ private:
 	// Processing indicator
 	void _show_processing();
 	void _hide_processing();
+	void _update_dock_title();
 	void _on_processing_timer_timeout();
 
 	// Streaming updates
@@ -361,8 +384,11 @@ private:
 	void _add_user_message(const String &p_text);
 	void _add_ai_message(const String &p_text);
 	void _add_system_message(const String &p_text);
+	void _show_welcome_message();
 	void _add_tool_message(const String &p_part_id, const String &p_tool_name, const String &p_status, const Dictionary &p_details);
 	void _scroll_chat_to_bottom();
+	void _do_scroll_to_bottom();
+	void _clear_scroll_suppress();
 	void _toggle_turn_collapse(int p_user_msg_index);
 	void _on_chat_scroll_changed(double p_value);
 	void _update_sticky_header();
@@ -407,6 +433,11 @@ private:
 	static AIAssistantDock *singleton;
 	bool _add_attachment_from_raw_data(const String &p_filename, const String &p_mime, const Vector<uint8_t> &p_data);
 	void _post_screenshot_result(const String &p_id, const String &p_b64);
+
+	// Eval (for godot_eval tool)
+	void _post_eval_result(const String &p_id, const String &p_value, const String &p_error = "");
+	void _on_ai_eval_return(const Array &p_data, const String &p_id);
+	static void _on_ai_eval_return_static(const Array &p_data, const String &p_id);
 	// Instance callbacks
 	void _on_screenshot_for_tool(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id);
 	void _on_screenshot_for_button(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
@@ -480,6 +511,8 @@ protected:
 public:
 	AIAssistantDock();
 	~AIAssistantDock();
+
+	virtual Size2 get_minimum_size() const override;
 
 	void set_service_url(const String &p_url);
 	String get_service_url() const;

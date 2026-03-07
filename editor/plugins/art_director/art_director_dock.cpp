@@ -32,15 +32,11 @@ void ArtDirectorPanel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_images_completed"), &ArtDirectorPanel::_on_images_completed);
 	ClassDB::bind_method(D_METHOD("_on_models_completed"), &ArtDirectorPanel::_on_models_completed);
 	ClassDB::bind_method(D_METHOD("_on_set_ref_completed"), &ArtDirectorPanel::_on_set_ref_completed);
-	ClassDB::bind_method(D_METHOD("_on_batch_started"), &ArtDirectorPanel::_on_batch_started);
-	ClassDB::bind_method(D_METHOD("_on_batch_poll"), &ArtDirectorPanel::_on_batch_poll);
-	ClassDB::bind_method(D_METHOD("_on_batch_poll_timeout"), &ArtDirectorPanel::_on_batch_poll_timeout);
 	ClassDB::bind_method(D_METHOD("_on_gallery_refresh_timeout"), &ArtDirectorPanel::_on_gallery_refresh_timeout);
 	ClassDB::bind_method(D_METHOD("_on_open_image_pressed", "abs_path"), &ArtDirectorPanel::_on_open_image_pressed);
 	ClassDB::bind_method(D_METHOD("_on_set_reference_pressed"), &ArtDirectorPanel::_on_set_reference_pressed);
 	ClassDB::bind_method(D_METHOD("_on_exploration_refresh_pressed"), &ArtDirectorPanel::_on_exploration_refresh_pressed);
 	ClassDB::bind_method(D_METHOD("_on_cornerstone_refresh_pressed"), &ArtDirectorPanel::_on_cornerstone_refresh_pressed);
-	ClassDB::bind_method(D_METHOD("_on_batch_generate_pressed"), &ArtDirectorPanel::_on_batch_generate_pressed);
 }
 
 void ArtDirectorPanel::_notification(int p_what) {
@@ -66,19 +62,11 @@ void ArtDirectorPanel::_setup_ui() {
 	margin->add_theme_constant_override("margin_bottom", 8);
 	add_child(margin);
 
-	HBoxContainer *columns = memnew(HBoxContainer);
-	columns->set_h_size_flags(SIZE_EXPAND_FILL);
-	columns->set_v_size_flags(SIZE_EXPAND_FILL);
-	columns->add_theme_constant_override("separation", 12);
-	margin->add_child(columns);
-
-	// ── LEFT COLUMN (galleries, ~70% width) ──────────────────────────────────
 	ScrollContainer *left_scroll = memnew(ScrollContainer);
 	left_scroll->set_h_size_flags(SIZE_EXPAND_FILL);
-	left_scroll->set_stretch_ratio(0.68f);
 	left_scroll->set_v_size_flags(SIZE_EXPAND_FILL);
 	left_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	columns->add_child(left_scroll);
+	margin->add_child(left_scroll);
 
 	VBoxContainer *left_vbox = memnew(VBoxContainer);
 	left_vbox->set_h_size_flags(SIZE_EXPAND_FILL);
@@ -180,88 +168,6 @@ void ArtDirectorPanel::_setup_ui() {
 	cornerstone_set_ref_button->connect("pressed", callable_mp(this, &ArtDirectorPanel::_on_set_reference_pressed));
 	left_vbox->add_child(cornerstone_set_ref_button);
 
-	// ── RIGHT COLUMN: Batch Production ──────────────────────────────────────
-	VBoxContainer *right_vbox = memnew(VBoxContainer);
-	right_vbox->set_h_size_flags(SIZE_EXPAND_FILL);
-	right_vbox->set_stretch_ratio(0.32f);
-	right_vbox->set_v_size_flags(SIZE_EXPAND_FILL);
-	columns->add_child(right_vbox);
-
-	Label *batch_header_label = memnew(Label);
-	batch_header_label->set_text(TTR("Batch Production"));
-	batch_header_label->add_theme_color_override("font_color", Color(0.8, 0.8, 1.0));
-	right_vbox->add_child(batch_header_label);
-
-	right_vbox->add_child(memnew(HSeparator));
-
-	// Reference picker
-	HBoxContainer *ref_row = memnew(HBoxContainer);
-	right_vbox->add_child(ref_row);
-
-	Label *ref_row_label = memnew(Label);
-	ref_row_label->set_text(TTR("Reference:"));
-	ref_row->add_child(ref_row_label);
-
-	batch_reference_picker = memnew(OptionButton);
-	batch_reference_picker->set_h_size_flags(SIZE_EXPAND_FILL);
-	batch_reference_picker->add_item(TTR("(project default)"), 0);
-	ref_row->add_child(batch_reference_picker);
-
-	// Batch model picker
-	HBoxContainer *batch_model_row = memnew(HBoxContainer);
-	right_vbox->add_child(batch_model_row);
-
-	Label *batch_model_label = memnew(Label);
-	batch_model_label->set_text(TTR("Model:"));
-	batch_model_row->add_child(batch_model_label);
-
-	batch_model_picker = memnew(OptionButton);
-	batch_model_picker->set_h_size_flags(SIZE_EXPAND_FILL);
-	batch_model_picker->add_item(TTR("Loading..."), 0);
-	batch_model_row->add_child(batch_model_picker);
-
-	// Output dir
-	HBoxContainer *dir_row = memnew(HBoxContainer);
-	right_vbox->add_child(dir_row);
-
-	Label *dir_label = memnew(Label);
-	dir_label->set_text(TTR("Output:"));
-	dir_row->add_child(dir_label);
-
-	batch_output_dir_input = memnew(LineEdit);
-	batch_output_dir_input->set_text("res://assets/batch/");
-	batch_output_dir_input->set_h_size_flags(SIZE_EXPAND_FILL);
-	dir_row->add_child(batch_output_dir_input);
-
-	// Prompts text area
-	Label *prompts_label = memnew(Label);
-	prompts_label->set_text(TTR("Prompts (one per line):"));
-	right_vbox->add_child(prompts_label);
-
-	batch_prompts_edit = memnew(TextEdit);
-	batch_prompts_edit->set_v_size_flags(SIZE_EXPAND_FILL);
-	batch_prompts_edit->set_custom_minimum_size(Size2(0, 120));
-	batch_prompts_edit->set_placeholder(TTR("treasure chest, 32x32, item icon\nhealth potion bottle\niron sword weapon icon"));
-	right_vbox->add_child(batch_prompts_edit);
-
-	batch_generate_button = memnew(Button);
-	batch_generate_button->set_text(TTR("Generate All"));
-	batch_generate_button->connect("pressed", callable_mp(this, &ArtDirectorPanel::_on_batch_generate_pressed));
-	right_vbox->add_child(batch_generate_button);
-
-	batch_progress_label = memnew(Label);
-	batch_progress_label->set_text("");
-	right_vbox->add_child(batch_progress_label);
-
-	// Batch results gallery
-	ScrollContainer *batch_scroll = memnew(ScrollContainer);
-	batch_scroll->set_custom_minimum_size(Size2(0, THUMB_SIZE + 32));
-	batch_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	right_vbox->add_child(batch_scroll);
-
-	batch_results_gallery = memnew(HBoxContainer);
-	batch_scroll->add_child(batch_results_gallery);
-
 	// ── HTTP infrastructure ──────────────────────────────────────────────────
 	profile_http_request = memnew(HTTPRequest);
 	add_child(profile_http_request);
@@ -278,19 +184,6 @@ void ArtDirectorPanel::_setup_ui() {
 	set_ref_http_request = memnew(HTTPRequest);
 	add_child(set_ref_http_request);
 	set_ref_http_request->connect("request_completed", callable_mp(this, &ArtDirectorPanel::_on_set_ref_completed));
-
-	batch_http_request = memnew(HTTPRequest);
-	add_child(batch_http_request);
-	batch_http_request->connect("request_completed", callable_mp(this, &ArtDirectorPanel::_on_batch_started));
-
-	batch_poll_request = memnew(HTTPRequest);
-	add_child(batch_poll_request);
-	batch_poll_request->connect("request_completed", callable_mp(this, &ArtDirectorPanel::_on_batch_poll));
-
-	batch_poll_timer = memnew(Timer);
-	batch_poll_timer->set_wait_time(3.0);
-	batch_poll_timer->connect("timeout", callable_mp(this, &ArtDirectorPanel::_on_batch_poll_timeout));
-	add_child(batch_poll_timer);
 
 	// Periodically refresh the gallery so new images appear automatically.
 	gallery_refresh_timer = memnew(Timer);
@@ -366,14 +259,6 @@ String ArtDirectorPanel::get_exploration_model() const {
 	return meta.get_type() == Variant::STRING ? String(meta) : "flux-schnell";
 }
 
-String ArtDirectorPanel::get_batch_model() const {
-	if (!batch_model_picker || batch_model_picker->get_item_count() == 0) {
-		return "";
-	}
-	Variant meta = batch_model_picker->get_item_metadata(batch_model_picker->get_selected());
-	return meta.get_type() == Variant::STRING ? String(meta) : "";
-}
-
 void ArtDirectorPanel::_load_thumbnail(const String &p_abs_path, ThumbInfo &r_info) {
 	Ref<Image> img = Image::load_from_file(p_abs_path);
 	if (img.is_null()) {
@@ -412,7 +297,11 @@ void ArtDirectorPanel::_rebuild_gallery(HBoxContainer *p_gallery, const Vector<T
 			thumb_btn->set_button_icon(info.texture);
 			thumb_btn->set_icon_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 		}
-		thumb_btn->set_tooltip_text(TTR("Click to select  •  Double-click to open"));
+		// Tooltip: show full description on hover, fall back to generic hint
+		String tip = info.tooltip.is_empty()
+			? TTR("Click to select  •  Double-click to open")
+			: info.tooltip + "\n\n" + TTR("Click to select  •  Double-click to open");
+		thumb_btn->set_tooltip_text(tip);
 
 		thumb_btn->set_meta("category", p_category);
 		thumb_btn->set_meta("index", i);
@@ -422,34 +311,13 @@ void ArtDirectorPanel::_rebuild_gallery(HBoxContainer *p_gallery, const Vector<T
 		vbox->add_child(thumb_btn);
 
 		Label *name_lbl = memnew(Label);
-		name_lbl->set_text(info.res_path.get_file().get_basename());
+		String display_name = info.label.is_empty() ? info.res_path.get_file().get_basename() : info.label;
+		name_lbl->set_text(display_name);
 		name_lbl->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 		name_lbl->set_custom_minimum_size(Size2(THUMB_SIZE, 0));
+		name_lbl->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+		name_lbl->set_tooltip_text(tip);
 		vbox->add_child(name_lbl);
-
-		// "Open" link button to view at full size in OS default viewer
-		Button *open_btn = memnew(Button);
-		open_btn->set_text(TTR("Open"));
-		open_btn->set_flat(true);
-		open_btn->set_custom_minimum_size(Size2(THUMB_SIZE, 0));
-		open_btn->add_theme_color_override("font_color", Color(0.5, 0.8, 1.0));
-		open_btn->connect("pressed", callable_mp(this, &ArtDirectorPanel::_on_open_image_pressed).bind(abs_path));
-		vbox->add_child(open_btn);
-	}
-}
-
-void ArtDirectorPanel::_rebuild_reference_picker() {
-	batch_reference_picker->clear();
-	batch_reference_picker->add_item(TTR("(project default)"), 0);
-	all_thumbs.clear();
-
-	for (const ThumbInfo &t : exploration_thumbs) {
-		all_thumbs.push_back(t);
-		batch_reference_picker->add_item(t.res_path.get_file(), all_thumbs.size());
-	}
-	for (const ThumbInfo &t : cornerstone_thumbs) {
-		all_thumbs.push_back(t);
-		batch_reference_picker->add_item(t.res_path.get_file(), all_thumbs.size());
 	}
 }
 
@@ -478,7 +346,7 @@ void ArtDirectorPanel::_on_profile_completed(int p_result, int p_code, const Pac
 	String art_direction = profile.get("art_direction", "");
 	String reference_asset = profile.get("reference_asset", "");
 
-	profile_style_label->set_text(TTR("Style: ") + (art_direction.is_empty() ? "(empty)" : art_direction.substr(0, 80)));
+	profile_style_label->set_text(TTR("Style: ") + (art_direction.is_empty() ? "(empty)" : art_direction));
 	profile_ref_label->set_text(TTR("Reference: ") + (reference_asset.is_empty() ? "(none)" : reference_asset));
 }
 
@@ -509,6 +377,8 @@ void ArtDirectorPanel::_on_images_completed(int p_result, int p_code, const Pack
 		ThumbInfo info;
 		info.res_path = res_path;
 		info.category = category;
+		info.label = img_info.get("label", "");
+		info.tooltip = img_info.get("tooltip", "");
 		_load_thumbnail(abs_path, info);
 
 		if (category == "exploration") {
@@ -520,7 +390,6 @@ void ArtDirectorPanel::_on_images_completed(int p_result, int p_code, const Pack
 
 	_rebuild_gallery(exploration_gallery, exploration_thumbs, "exploration");
 	_rebuild_gallery(cornerstone_gallery, cornerstone_thumbs, "cornerstone");
-	_rebuild_reference_picker();
 }
 
 void ArtDirectorPanel::_on_models_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
@@ -528,6 +397,7 @@ void ArtDirectorPanel::_on_models_completed(int p_result, int p_code, const Pack
 		// Server not ready — populate with known static list as fallback
 		struct ModelEntry { const char *id; const char *label; };
 		static const ModelEntry FALLBACK_MODELS[] = {
+			{ "nano-banana-2",       "nano-banana-2 ($0.067) — fast, pro-level" },
 			{ "flux-2-dev",          "flux-2-dev ($0.012) — FLUX.2 open-source" },
 			{ "flux-2-pro",          "flux-2-pro ($0.015) — FLUX.2 flagship" },
 			{ "flux-schnell",        "flux-schnell ($0.003) — fastest" },
@@ -538,15 +408,11 @@ void ArtDirectorPanel::_on_models_completed(int p_result, int p_code, const Pack
 			{ "sdxl",                "sdxl ($0.0055)" },
 		};
 		exploration_model_picker->clear();
-		batch_model_picker->clear();
 		for (const ModelEntry &m : FALLBACK_MODELS) {
 			exploration_model_picker->add_item(m.label);
 			exploration_model_picker->set_item_metadata(exploration_model_picker->get_item_count() - 1, String(m.id));
-			batch_model_picker->add_item(m.label);
-			batch_model_picker->set_item_metadata(batch_model_picker->get_item_count() - 1, String(m.id));
 		}
-		_populate_model_picker(exploration_model_picker, "flux-2-dev");
-		_populate_model_picker(batch_model_picker, "flux-2-dev");
+		_populate_model_picker(exploration_model_picker, "nano-banana-2");
 		return;
 	}
 
@@ -564,7 +430,6 @@ void ArtDirectorPanel::_on_models_completed(int p_result, int p_code, const Pack
 	}
 
 	exploration_model_picker->clear();
-	batch_model_picker->clear();
 
 	for (int i = 0; i < models.size(); i++) {
 		Dictionary m = models[i];
@@ -581,102 +446,14 @@ void ArtDirectorPanel::_on_models_completed(int p_result, int p_code, const Pack
 
 		exploration_model_picker->add_item(label);
 		exploration_model_picker->set_item_metadata(exploration_model_picker->get_item_count() - 1, id);
-		batch_model_picker->add_item(label);
-		batch_model_picker->set_item_metadata(batch_model_picker->get_item_count() - 1, id);
 	}
 
 	_populate_model_picker(exploration_model_picker, "flux-2-dev");
-	_populate_model_picker(batch_model_picker, "flux-2-dev");
 }
 
 void ArtDirectorPanel::_on_set_ref_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	if (p_result == HTTPRequest::RESULT_SUCCESS && p_code == 200) {
 		_refresh_profile();
-	}
-}
-
-void ArtDirectorPanel::_on_batch_started(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	batch_generate_button->set_disabled(false);
-
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		batch_progress_label->set_text(TTR("Error starting batch generation"));
-		return;
-	}
-
-	String body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
-	JSON json;
-	if (json.parse(body_str) != OK) {
-		return;
-	}
-
-	Dictionary data = json.get_data();
-	current_batch_id = data.get("batchId", "");
-
-	if (!current_batch_id.is_empty()) {
-		batch_progress_label->set_text(TTR("Generating..."));
-		batch_poll_timer->start();
-	}
-}
-
-void ArtDirectorPanel::_on_batch_poll(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	batch_poll_in_progress = false;
-
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		return;
-	}
-
-	String body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
-	JSON json;
-	if (json.parse(body_str) != OK) {
-		return;
-	}
-
-	Dictionary data = json.get_data();
-	int total = data.get("total", 0);
-	int completed = data.get("completed", 0);
-	int failed = data.get("failed", 0);
-
-	batch_progress_label->set_text(vformat(TTR("Progress: %d/%d (%d failed)"), completed, total, failed));
-
-	while (batch_results_gallery->get_child_count() > 0) {
-		Node *child = batch_results_gallery->get_child(0);
-		batch_results_gallery->remove_child(child);
-		child->queue_free();
-	}
-
-	Array items = data.get("items", Array());
-	for (int i = 0; i < items.size(); i++) {
-		Dictionary item = items[i];
-		String status = item.get("status", "");
-		String res_path = item.get("resPath", "");
-
-		VBoxContainer *vbox = memnew(VBoxContainer);
-		batch_results_gallery->add_child(vbox);
-
-		TextureRect *rect = memnew(TextureRect);
-		rect->set_custom_minimum_size(Size2(THUMB_SIZE, THUMB_SIZE));
-		rect->set_expand_mode(TextureRect::EXPAND_FIT_WIDTH_PROPORTIONAL);
-
-		if (status == "completed" && !res_path.is_empty()) {
-			String abs = _abs_path_from_res(res_path);
-			Ref<Image> img = Image::load_from_file(abs);
-			if (img.is_valid()) {
-				img->resize(THUMB_SIZE, THUMB_SIZE, Image::INTERPOLATE_BILINEAR);
-				rect->set_texture(ImageTexture::create_from_image(img));
-			}
-		}
-		vbox->add_child(rect);
-
-		Label *status_lbl = memnew(Label);
-		status_lbl->set_text(status == "completed" ? "✓" : status == "failed" ? "✗" : "⏳");
-		status_lbl->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-		vbox->add_child(status_lbl);
-	}
-
-	if (completed + failed >= total && total > 0) {
-		batch_poll_timer->stop();
-		batch_progress_label->set_text(vformat(TTR("Done: %d/%d (%d failed)"), completed, total, failed));
-		_refresh_images();
 	}
 }
 
@@ -687,6 +464,19 @@ void ArtDirectorPanel::_on_open_image_pressed(String p_abs_path) {
 }
 
 void ArtDirectorPanel::_on_exploration_thumb_pressed(int p_index) {
+	uint64_t now = OS::get_singleton()->get_ticks_msec();
+	if (last_thumb_click_category == "exploration" && last_thumb_click_index == p_index && (now - last_thumb_click_time) < 400) {
+		// Double-click: open in OS viewer
+		if (p_index >= 0 && p_index < exploration_thumbs.size()) {
+			_on_open_image_pressed(_abs_path_from_res(exploration_thumbs[p_index].res_path));
+		}
+		last_thumb_click_time = 0;
+		return;
+	}
+	last_thumb_click_time = now;
+	last_thumb_click_category = "exploration";
+	last_thumb_click_index = p_index;
+
 	selected_exploration_index = p_index;
 	selected_cornerstone_index = -1;
 	exploration_set_ref_button->set_disabled(false);
@@ -694,6 +484,19 @@ void ArtDirectorPanel::_on_exploration_thumb_pressed(int p_index) {
 }
 
 void ArtDirectorPanel::_on_cornerstone_thumb_pressed(int p_index) {
+	uint64_t now = OS::get_singleton()->get_ticks_msec();
+	if (last_thumb_click_category == "cornerstone" && last_thumb_click_index == p_index && (now - last_thumb_click_time) < 400) {
+		// Double-click: open in OS viewer
+		if (p_index >= 0 && p_index < cornerstone_thumbs.size()) {
+			_on_open_image_pressed(_abs_path_from_res(cornerstone_thumbs[p_index].res_path));
+		}
+		last_thumb_click_time = 0;
+		return;
+	}
+	last_thumb_click_time = now;
+	last_thumb_click_category = "cornerstone";
+	last_thumb_click_index = p_index;
+
 	selected_cornerstone_index = p_index;
 	selected_exploration_index = -1;
 	cornerstone_set_ref_button->set_disabled(false);
@@ -729,63 +532,6 @@ void ArtDirectorPanel::_on_exploration_refresh_pressed() {
 
 void ArtDirectorPanel::_on_cornerstone_refresh_pressed() {
 	_refresh_images();
-}
-
-void ArtDirectorPanel::_on_batch_generate_pressed() {
-	String prompts_text = batch_prompts_edit->get_text().strip_edges();
-	if (prompts_text.is_empty()) {
-		batch_progress_label->set_text(TTR("Enter at least one prompt"));
-		return;
-	}
-
-	PackedStringArray lines = prompts_text.split("\n");
-	Array prompts_array;
-	for (const String &line : lines) {
-		String trimmed = line.strip_edges();
-		if (!trimmed.is_empty()) {
-			prompts_array.push_back(trimmed);
-		}
-	}
-
-	if (prompts_array.is_empty()) {
-		return;
-	}
-
-	String ref_asset;
-	int picker_idx = batch_reference_picker->get_selected_id();
-	if (picker_idx > 0 && picker_idx <= all_thumbs.size()) {
-		ref_asset = all_thumbs[picker_idx - 1].res_path;
-	}
-
-	Dictionary body_dict;
-	body_dict["prompts"] = prompts_array;
-	body_dict["output_dir"] = batch_output_dir_input->get_text();
-	body_dict["directory"] = _get_project_root();
-	if (!ref_asset.is_empty()) {
-		body_dict["reference_asset"] = ref_asset;
-	}
-	String selected_model = get_batch_model();
-	if (!selected_model.is_empty()) {
-		body_dict["model"] = selected_model;
-	}
-
-	String body_str = JSON::stringify(body_dict);
-	PackedStringArray headers;
-	headers.push_back("Content-Type: application/json");
-
-	batch_generate_button->set_disabled(true);
-	batch_progress_label->set_text(TTR("Starting batch..."));
-	batch_http_request->request(service_url + "/godot/art-director/batch", headers, HTTPClient::METHOD_POST, body_str);
-}
-
-void ArtDirectorPanel::_on_batch_poll_timeout() {
-	if (batch_poll_in_progress || current_batch_id.is_empty()) {
-		return;
-	}
-	batch_poll_in_progress = true;
-	String url = service_url + "/godot/art-director/batch/" + current_batch_id;
-	PackedStringArray headers;
-	batch_poll_request->request(url, headers);
 }
 
 void ArtDirectorPanel::_on_gallery_refresh_timeout() {

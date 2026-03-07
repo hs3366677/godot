@@ -60,7 +60,7 @@ const char *AIAssetMetadata::KEY_BUNDLE_RELATED = "bundle_related";
 const char *AIAssetMetadata::KEY_SOURCE_ASSET = "source_asset";
 const char *AIAssetMetadata::KEY_TRANSFORM = "transform";
 const char *AIAssetMetadata::KEY_ASSET_TYPE = "asset_type";
-const char *AIAssetMetadata::KEY_GAME_CONTEXT = "game_context";
+const char *AIAssetMetadata::KEY_USAGE = "usage";
 const char *AIAssetMetadata::KEY_CREATED_AT = "created_at";
 const char *AIAssetMetadata::KEY_CREATED_BY = "created_by";
 const char *AIAssetMetadata::KEY_HISTORY = "history";
@@ -76,7 +76,7 @@ void AIAssetMetadata::_bind_methods() {
 
 	// Bind static methods
 	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("create_import_metadata", "source_path", "original_filename", "size_bytes"), &AIAssetMetadata::create_import_metadata, DEFVAL(0));
-	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("create_placeholder_metadata", "asset_type", "prompt", "provider", "model", "parameters", "game_context"), &AIAssetMetadata::create_placeholder_metadata, DEFVAL(Dictionary()), DEFVAL(String()));
+	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("create_placeholder_metadata", "asset_type", "prompt", "provider", "model", "parameters", "usage"), &AIAssetMetadata::create_placeholder_metadata, DEFVAL(Dictionary()), DEFVAL(Dictionary()));
 	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("create_generation_metadata", "prompt", "provider", "model", "seed", "parameters"), &AIAssetMetadata::create_generation_metadata, DEFVAL(-1), DEFVAL(Dictionary()));
 	ClassDB::bind_static_method("AIAssetMetadata", D_METHOD("create_hybrid_metadata", "source_asset", "transform_type", "prompt", "provider", "model"), &AIAssetMetadata::create_hybrid_metadata);
 
@@ -165,7 +165,7 @@ Dictionary AIAssetMetadata::create_placeholder_metadata(
 		const String &p_provider,
 		const String &p_model,
 		const Dictionary &p_parameters,
-		const String &p_game_context) {
+		const Dictionary &p_usage) {
 	Dictionary metadata;
 	metadata[KEY_ORIGIN] = origin_to_string(ORIGIN_PLACEHOLDER);
 	metadata[KEY_ASSET_TYPE] = p_asset_type;
@@ -177,8 +177,8 @@ Dictionary AIAssetMetadata::create_placeholder_metadata(
 	}
 	metadata[KEY_CREATED_AT] = get_current_timestamp();
 	metadata[KEY_CREATED_BY] = "ai_assistant";
-	if (!p_game_context.is_empty()) {
-		metadata[KEY_GAME_CONTEXT] = p_game_context;
+	if (!p_usage.is_empty()) {
+		metadata[KEY_USAGE] = p_usage;
 	}
 	return metadata;
 }
