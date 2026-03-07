@@ -310,10 +310,14 @@ bool GameViewDebugger::_msg_get_screenshot(const Array &p_args) {
 	const String &path = p_args[3];
 
 	if (screenshot_callbacks.has(id)) {
-		if (screenshot_callbacks[id].cb.is_valid()) {
-			screenshot_callbacks[id].cb.call(w, h, path, screenshot_callbacks[id].rect);
-		}
+		Callable cb = screenshot_callbacks[id].cb;
+		Rect2i rect = screenshot_callbacks[id].rect;
 		screenshot_callbacks.erase(id);
+		Variant vw = w, vh = h, vpath = path, vrect = rect;
+		const Variant *args[4] = { &vw, &vh, &vpath, &vrect };
+		Callable::CallError ce;
+		Variant ret;
+		cb.callp(args, 4, ret, ce);
 	}
 	return true;
 }
@@ -963,7 +967,7 @@ void GameView::_notification(int p_what) {
 					} break;
 					default: {
 						embed_on_play = EditorSettings::get_singleton()->get_project_metadata("game_view", "embed_on_play", true);
-						make_floating_on_play = EditorSettings::get_singleton()->get_project_metadata("game_view", "make_floating_on_play", true);
+						make_floating_on_play = EditorSettings::get_singleton()->get_project_metadata("game_view", "make_floating_on_play", false);
 					} break;
 				}
 				embed_size_mode = (EmbedSizeMode)(int)EditorSettings::get_singleton()->get_project_metadata("game_view", "embed_size_mode", SIZE_MODE_FIXED);

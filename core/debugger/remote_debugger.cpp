@@ -37,6 +37,7 @@
 #include "core/debugger/script_debugger.h"
 #include "core/input/input.h"
 #include "core/io/resource_loader.h"
+#include "core/os/main_loop.h"
 #include "core/math/expression.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
@@ -734,6 +735,74 @@ Error RemoteDebugger::_core_capture(const String &p_cmd, const Array &p_data, bo
 	return OK;
 }
 
+Error RemoteDebugger::_ai_capture(const String &p_cmd, const Array &p_data, bool &r_captured) {
+	r_captured = true;
+	if (p_cmd == "eval") {
+		// Evaluate a GDScript expression at runtime (without requiring a breakpoint).
+		// p_data: [expression_string, eval_id]
+		ERR_FAIL_COND_V(p_data.size() < 2, ERR_INVALID_DATA);
+		String expression_str = p_data[0];
+		String eval_id = p_data[1];
+
+		// Build input names and values from engine singletons (same as breakpoint eval,
+		// but without stack frame locals since we're not paused).
+		PackedStringArray input_names;
+		Array input_vals;
+
+		// Add exposed engine singletons (Input, Engine, etc.)
+		LocalVector<StringName> native_types;
+		ClassDB::get_class_list(native_types);
+		for (const StringName &class_name : native_types) {
+			if (!ClassDB::is_class_exposed(class_name) || !Engine::get_singleton()->has_singleton(class_name) || Engine::get_singleton()->is_singleton_editor_only(class_name)) {
+				continue;
+			}
+			input_names.append(class_name);
+			input_vals.append(Engine::get_singleton()->get_singleton_object(class_name));
+		}
+
+		// Add user-defined global classes
+		LocalVector<StringName> user_types;
+		ScriptServer::get_global_class_list(user_types);
+		for (const StringName &class_name : user_types) {
+			String scr_path = ScriptServer::get_global_class_path(class_name);
+			Ref<Script> scr = ResourceLoader::load(scr_path, "Script");
+			if (scr.is_valid()) {
+				input_names.append(class_name);
+				input_vals.append(scr);
+			}
+		}
+
+		// Evaluate the expression with the main loop (SceneTree) as the base object.
+		// This gives access to get_tree(), get_node(), etc.
+		Expression expression;
+		Error err = expression.parse(expression_str, input_names);
+
+		Array result;
+		result.push_back(eval_id);
+
+		if (err != OK) {
+			result.push_back(""); // value
+			result.push_back(expression.get_error_text()); // error
+		} else {
+			MainLoop *main_loop = OS::get_singleton()->get_main_loop();
+			Object *base_instance = main_loop ? (Object *)main_loop : (Object *)Engine::get_singleton();
+			Variant return_val = expression.execute(input_vals, base_instance);
+			if (expression.has_execute_failed()) {
+				result.push_back(""); // value
+				result.push_back(expression.get_error_text()); // error
+			} else {
+				result.push_back(return_val.stringify()); // value
+				result.push_back(""); // error
+			}
+		}
+
+		send_message("ai:eval_return", result);
+	} else {
+		r_captured = false;
+	}
+	return OK;
+}
+
 Error RemoteDebugger::_profiler_capture(const String &p_cmd, const Array &p_data, bool &r_captured) {
 	r_captured = false;
 	ERR_FAIL_COND_V(p_data.is_empty(), ERR_INVALID_DATA);
@@ -774,6 +843,11 @@ RemoteDebugger::RemoteDebugger(Ref<RemoteDebuggerPeer> p_peer) {
 				return static_cast<RemoteDebugger *>(p_user)->_profiler_capture(p_cmd, p_data, r_captured);
 			});
 	register_message_capture("profiler", profiler_cap);
+	Capture ai_cap(this,
+			[](void *p_user, const String &p_cmd, const Array &p_data, bool &r_captured) {
+				return static_cast<RemoteDebugger *>(p_user)->_ai_capture(p_cmd, p_data, r_captured);
+			});
+	register_message_capture("ai", ai_cap);
 
 	// Error handlers
 	phl.printfunc = _print_handler;

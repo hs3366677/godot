@@ -480,12 +480,23 @@ Error SceneDebugger::_msg_transform_camera_3d(const Array &p_args) {
 Error SceneDebugger::_msg_rq_screenshot(const Array &p_args) {
 	ERR_FAIL_COND_V(p_args.is_empty(), ERR_INVALID_DATA);
 
+	int64_t rq_id = (int64_t)p_args[0];
+
+	// Defer to next frame so the GPU has finished rendering the current frame.
+	callable_mp_static(&SceneDebugger::_do_screenshot).bind(rq_id).call_deferred();
+
+	return OK;
+}
+
+// Called via call_deferred — runs on main thread next frame after GPU flush.
+void SceneDebugger::_do_screenshot(int64_t p_rq_id) {
 	Viewport *viewport = SceneTree::get_singleton()->get_root();
-	ERR_FAIL_NULL_V_MSG(viewport, ERR_UNCONFIGURED, "Cannot get a viewport from the main screen.");
+	ERR_FAIL_NULL(viewport);
 	Ref<ViewportTexture> texture = viewport->get_texture();
-	ERR_FAIL_COND_V_MSG(texture.is_null(), ERR_UNCONFIGURED, "Cannot get a viewport texture from the main screen.");
+	ERR_FAIL_COND(texture.is_null());
 	Ref<Image> img = texture->get_image();
-	ERR_FAIL_COND_V_MSG(img.is_null(), ERR_UNCONFIGURED, "Cannot get an image from a viewport texture of the main screen.");
+	ERR_FAIL_COND_MSG(img.is_null(), "rq_screenshot: get_image() returned null");
+	ERR_FAIL_COND_MSG(img->is_empty(), "rq_screenshot: image is empty");
 	img->clear_mipmaps();
 
 	const String TEMP_DIR = OS::get_singleton()->get_temp_path();
@@ -504,13 +515,11 @@ Error SceneDebugger::_msg_rq_screenshot(const Array &p_args) {
 	img->save_png(path);
 
 	Array arr;
-	arr.append(p_args[0]);
+	arr.append(p_rq_id);
 	arr.append(img->get_width());
 	arr.append(img->get_height());
 	arr.append(path);
 	EngineDebugger::get_singleton()->send_message("game_view:get_screenshot", arr);
-
-	return OK;
 }
 
 // endregion

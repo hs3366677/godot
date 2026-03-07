@@ -20,9 +20,11 @@
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/tab_container.h"
 #include "scene/gui/text_edit.h"
+#include "scene/gui/tree.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/panel_container.h"
+#include "scene/gui/popup.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/http_request.h"
 #include "scene/main/timer.h"
@@ -31,6 +33,7 @@
 #include "core/io/json.h"
 #include "scene/resources/image_texture.h"
 
+class AIAssistantManager;
 class EditorFileDialog;
 
 class AIAssistantDock : public EditorDock {
@@ -84,24 +87,29 @@ public:
 	};
 
 private:
+	// Instance management
+	int instance_id = 0;
+	String initial_session_id;
+	bool create_new_session_if_none = false; // When true, never steal another dock's session
+	bool has_user_message = false; // Track whether user has sent at least one message in this session
+	Button *new_instance_button = nullptr;
+	void _on_new_instance_pressed();
+	void _on_close_instance_pressed();
+
 	// Main container
 	VBoxContainer *main_container = nullptr;
 
 	// UI Components
-	HBoxContainer *header_container = nullptr;
-	Label *title_label = nullptr;
+	HBoxContainer *toolbar_container = nullptr;
+	Button *session_history_button = nullptr;
+	Button *settings_button = nullptr;
 	ColorRect *connection_indicator = nullptr;
 
-	HBoxContainer *toolbar_container = nullptr;
-	MenuButton *template_button = nullptr;
-	Button *clear_button = nullptr;
-	Button *verify_button = nullptr;
-	Button *reconnect_button = nullptr;
-	Button *settings_button = nullptr;
-	Label *status_label = nullptr;
-
-	// Settings dialog (asset provider configuration)
+	// Settings dialog (asset provider configuration + prompt management)
 	AcceptDialog *settings_dialog = nullptr;
+	TabContainer *settings_tabs = nullptr;
+
+	// Providers tab
 	LineEdit *replicate_token_input = nullptr;
 	Button *replicate_test_button = nullptr;
 	Label *replicate_status_label = nullptr;
@@ -111,8 +119,16 @@ private:
 	HTTPRequest *settings_http_request = nullptr;
 	String settings_testing_provider;
 
+	// Prompt tab
+	TextEdit *project_prompt_edit = nullptr;
+	Label *project_prompt_path_label = nullptr;
+	Button *generate_prompt_button = nullptr;
+	Tree *engine_prompt_tree = nullptr;
+	RichTextLabel *engine_prompt_preview = nullptr;
+
 	// Model selector (two-level submenu: Provider → Models)
 	MenuButton *model_button = nullptr;
+	CheckButton *thinking_toggle = nullptr;
 	Vector<PopupMenu *> provider_submenus;
 	HTTPRequest *model_http_request = nullptr;
 	ProviderRequestType provider_request_type = PROVIDER_REQUEST_NONE;
@@ -136,16 +152,10 @@ private:
 	AcceptDialog *auth_code_dialog = nullptr;
 	LineEdit *auth_code_input = nullptr;
 
-	// Tab container for Chat and Logs
-	TabContainer *tab_container = nullptr;
-
-	// Chat tab
+	// Chat area
 	VBoxContainer *chat_tab = nullptr;
 	ScrollContainer *chat_scroll = nullptr;
 	VBoxContainer *chat_container = nullptr;
-	CheckButton *chat_auto_scroll = nullptr;
-	CheckButton *plan_mode_toggle = nullptr;
-	CheckButton *auto_accept_toggle = nullptr;
 
 	// Collapse/expand for AI response turns
 	Vector<int> user_message_indices; // child indices in chat_container for each user message
@@ -163,15 +173,18 @@ private:
 	HBoxContainer *button_container = nullptr;
 	TextEdit *prompt_input = nullptr;
 	Button *send_button = nullptr;
-	Button *stop_button = nullptr;
+	bool is_processing = false; // true when AI is thinking (send button becomes stop)
+	bool user_scrolled_up = false; // true when user has scrolled away from bottom
+	bool suppress_scroll_tracking = false; // true during programmatic scrolls
 
 	// Image attachments
-	static const int MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+	static const int MAX_IMAGE_SIZE_BYTES = 3 * 1024 * 1024 + 800 * 1024; // ~3.8 MB raw => ~5 MB base64 (Anthropic limit)
 	static const int THUMBNAIL_SIZE = 64;
 	Vector<AttachmentInfo> pending_attachments;
 	ScrollContainer *attachment_scroll = nullptr;
 	HBoxContainer *attachment_preview_container = nullptr;
 	Button *attach_image_button = nullptr;
+	Button *screenshot_button = nullptr;
 	EditorFileDialog *image_file_dialog = nullptr;
 
 	// Slash command autocomplete (inline, non-modal)
@@ -183,15 +196,26 @@ private:
 	void _on_slash_hint_pressed(int p_id);
 	void _update_slash_hint_highlight();
 
+	// Skill system
+	struct SkillInfo {
+		String name;
+		String description;
+		String auto_detect;            // Regex keywords for auto-detection from message text
+		String auto_detect_attachment; // Trigger on attachment type: "image", etc.
+		String content;                // Full SKILL.md content (after frontmatter)
+	};
+	Vector<SkillInfo> available_skills;
+	void _load_skills();
+	String _get_active_skill_content(const String &p_user_message, bool p_has_image_attachment = false) const;
+
 	// Mode flags
-	bool is_plan_mode = false;
-	bool is_auto_accept = false;
 	bool coding_standards_injected = false; // Reset per session
 
 	// Processing indicator (overlay on prompt_input top-right)
 	Label *processing_label = nullptr;
 	Timer *processing_timer = nullptr;
 	int processing_dots = 0;
+	String current_tool_name; // Currently running tool (for title display)
 
 	// Streaming updates (poll for message parts during processing)
 	HTTPRequest *stream_http_request = nullptr;
@@ -199,6 +223,10 @@ private:
 	String current_message_id;
 	int last_part_count = 0;
 	bool stream_request_in_progress = false;
+	int stream_empty_poll_count = 0; // Count consecutive empty polls for stale session detection
+	String ignore_assistant_message_id; // Skip this message ID during polling (set after abort/stop)
+	String compaction_summary_message_id; // The compaction summary message ID (to skip on completion)
+	String compaction_summary_text; // Full summary text for detail popup
 
 	// Track tool UI elements by part ID for status updates
 	HashMap<String, RichTextLabel *> tool_containers;
@@ -279,15 +307,16 @@ private:
 	// UI handlers
 	void _on_send_pressed();
 	void _on_stop_pressed();
+	void _on_send_or_stop_pressed();
 	void _on_clear_pressed();
-	void _on_reconnect_pressed();
-	void _on_template_selected(int p_id);
 	void _on_prompt_input_gui_input(const Ref<InputEvent> &p_event);
 
 	// Image attachment handling
 	void _on_attach_image_pressed();
+	void _on_screenshot_pressed();
 	void _on_image_files_selected(const PackedStringArray &p_paths);
 	void _on_files_dropped_on_dock(const PackedStringArray &p_files);
+	void _on_file_removed(const String &p_file);
 	void _on_remove_attachment(int p_index);
 	bool _add_attachment_from_file(const String &p_path);
 	bool _add_attachment_from_clipboard_image();
@@ -297,8 +326,6 @@ private:
 	String _encode_data_url(const String &p_mime, const Vector<uint8_t> &p_data) const;
 	bool _is_supported_image_extension(const String &p_extension) const;
 
-	void _on_plan_mode_toggled(bool p_enabled);
-	void _on_auto_accept_toggled(bool p_enabled);
 	void _on_settings_pressed();
 	void _on_replicate_test_pressed();
 	void _on_meshy_test_pressed();
@@ -306,6 +333,15 @@ private:
 	void _on_settings_save_pressed();
 	void _on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _auto_configure_providers();
+
+	// Prompt management
+	String _load_project_prompt();
+	void _save_project_prompt(const String &p_content);
+	String _generate_project_prompt_template();
+	Vector<String> _get_engine_prompt_files();
+	void _populate_engine_prompt_tree();
+	void _on_engine_prompt_selected();
+	void _on_generate_prompt_pressed();
 	void _process_slash_command(const String &p_command);
 	void _on_providers_status_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
@@ -330,6 +366,7 @@ private:
 	// Processing indicator
 	void _show_processing();
 	void _hide_processing();
+	void _update_dock_title();
 	void _on_processing_timer_timeout();
 
 	// Streaming updates
@@ -347,8 +384,11 @@ private:
 	void _add_user_message(const String &p_text);
 	void _add_ai_message(const String &p_text);
 	void _add_system_message(const String &p_text);
+	void _show_welcome_message();
 	void _add_tool_message(const String &p_part_id, const String &p_tool_name, const String &p_status, const Dictionary &p_details);
 	void _scroll_chat_to_bottom();
+	void _do_scroll_to_bottom();
+	void _clear_scroll_suppress();
 	void _toggle_turn_collapse(int p_user_msg_index);
 	void _on_chat_scroll_changed(double p_value);
 	void _update_sticky_header();
@@ -389,6 +429,22 @@ private:
 	void _on_question_custom_submitted();
 	void _send_question_reply(const String &p_request_id, const Array &p_answers);
 
+	// Screenshot capture (for godot_screenshot tool and 📷 button)
+	static AIAssistantDock *singleton;
+	bool _add_attachment_from_raw_data(const String &p_filename, const String &p_mime, const Vector<uint8_t> &p_data);
+	void _post_screenshot_result(const String &p_id, const String &p_b64);
+
+	// Eval (for godot_eval tool)
+	void _post_eval_result(const String &p_id, const String &p_value, const String &p_error = "");
+	void _on_ai_eval_return(const Array &p_data, const String &p_id);
+	static void _on_ai_eval_return_static(const Array &p_data, const String &p_id);
+	// Instance callbacks
+	void _on_screenshot_for_tool(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id);
+	void _on_screenshot_for_button(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
+	// Static callbacks — bypass ObjectDB checks, dispatch to singleton
+	static void _screenshot_for_button_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
+	static void _screenshot_for_tool_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id);
+
 	// Auto-verification
 	void _on_game_stopped();
 	void _auto_verify_game_logs();
@@ -419,6 +475,35 @@ private:
 	void _load_session_history();
 	void _on_session_history_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
+	// Session history panel (custom popup)
+	HTTPRequest *session_history_list_http = nullptr;
+	Vector<Dictionary> cached_session_list;
+	PopupPanel *session_popup = nullptr;
+	VBoxContainer *session_popup_list = nullptr;
+	void _clear_chat_ui();
+	void _on_session_history_pressed();
+	void _fetch_session_list();
+	void _on_session_history_list_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_session_item_clicked(int p_index);
+	void _on_session_new_pressed();
+	void _switch_to_session(const String &p_session_id, const String &p_title);
+	void _fire_and_forget_delete_session(const String &p_session_id);
+
+	// Session delete confirmation
+	ConfirmationDialog *session_delete_confirm = nullptr;
+	int session_pending_delete_index = -1;
+	void _on_session_delete_pressed(int p_index);
+	void _on_session_delete_confirmed();
+
+	// Session rename
+	AcceptDialog *session_rename_dialog = nullptr;
+	LineEdit *session_rename_input = nullptr;
+	int session_pending_rename_index = -1;
+	HTTPRequest *session_rename_http = nullptr;
+	void _on_session_rename_pressed(int p_index);
+	void _on_session_rename_confirmed();
+	void _on_session_rename_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+
 protected:
 	void _notification(int p_what);
 	static void _bind_methods();
@@ -427,9 +512,20 @@ public:
 	AIAssistantDock();
 	~AIAssistantDock();
 
+	virtual Size2 get_minimum_size() const override;
+
 	void set_service_url(const String &p_url);
 	String get_service_url() const;
 
 	bool is_connected_to_service() const;
 	ConnectionStatus get_connection_status() const;
+
+	// Instance management
+	void set_instance_id(int p_id);
+	int get_instance_id() const { return instance_id; }
+	void set_initial_session_id(const String &p_session_id);
+	void set_create_new_session_if_none(bool p_create) { create_new_session_if_none = p_create; }
+	String get_session_id() const { return session_id; }
+	bool get_has_user_message() const { return has_user_message; }
+	void cleanup_before_close();
 };

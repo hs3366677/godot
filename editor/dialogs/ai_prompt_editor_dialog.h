@@ -33,7 +33,7 @@
 #include "scene/gui/dialogs.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
-#include "scene/gui/check_box.h"
+
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/option_button.h"
@@ -77,9 +77,6 @@ private:
 	SpinBox *seed_spinbox = nullptr;
 	Button *random_seed_button = nullptr;
 
-	// Post-processing options
-	CheckBox *transparent_bg_checkbox = nullptr;
-
 	// Version info
 	Label *version_label = nullptr;
 
@@ -114,7 +111,5 @@ public:
 	String get_negative_prompt() const;
 	String get_selected_model() const;
 	int get_seed() const;
-	bool get_transparent_bg() const;
-
 	AIPromptEditorDialog();
 };

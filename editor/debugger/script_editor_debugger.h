@@ -157,6 +157,10 @@ private:
 	EditorPerformanceProfiler *performance_profiler = nullptr;
 	EditorExpressionEvaluator *expression_evaluator = nullptr;
 
+	// AI eval callback — when set, the next evaluation_return is forwarded to this callback
+	// instead of (in addition to) the expression evaluator UI.
+	Callable ai_eval_callback;
+
 	OS::ProcessID remote_pid = 0;
 	bool move_to_foreground = true;
 	bool can_request_idle_draw = false;
@@ -233,6 +237,7 @@ private:
 	void _msg_performance_profile_names(uint64_t p_thread_id, const Array &p_data);
 	void _msg_filesystem_update_file(uint64_t p_thread_id, const Array &p_data);
 	void _msg_evaluation_return(uint64_t p_thread_id, const Array &p_data);
+	void _msg_ai_eval_return(uint64_t p_thread_id, const Array &p_data);
 	void _msg_window_title(uint64_t p_thread_id, const Array &p_data);
 	void _msg_embed_suspend_toggle(uint64_t p_thread_id, const Array &p_data);
 	void _msg_embed_next_frame(uint64_t p_thread_id, const Array &p_data);
@@ -315,6 +320,8 @@ public:
 	const SceneDebuggerTree *get_remote_tree();
 
 	void request_remote_evaluate(const String &p_expression, int p_stack_frame);
+	void request_ai_eval(const String &p_expression, const String &p_eval_id, const Callable &p_callback);
+	void set_ai_eval_callback(const Callable &p_callback);
 
 	void start(Ref<RemoteDebuggerPeer> p_peer);
 	void stop();

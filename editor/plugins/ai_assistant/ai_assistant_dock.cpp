@@ -7,6 +7,7 @@
 /**************************************************************************/
 
 #include "ai_assistant_dock.h"
+#include "ai_assistant_manager.h"
 
 #include "core/config/project_settings.h"
 #include "core/input/input_event.h"
@@ -19,141 +20,251 @@
 #include "editor/debugger/script_editor_debugger.h"
 #include "editor/editor_interface.h"
 #include "editor/settings/editor_settings.h"
+#include "editor/docks/filesystem_dock.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/run/editor_run_bar.h"
 #include "editor/gui/editor_file_dialog.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/separator.h"
 #include "scene/resources/style_box_flat.h"
+#include "scene/resources/image_texture.h"
 #include "servers/display/display_server.h"
+
+// Convert HTTP response body to String, stripping any NUL bytes to avoid
+// Godot's "Unexpected NUL character" error spam from String::utf8().
+static String _body_to_string(const PackedByteArray &p_body) {
+	if (p_body.is_empty()) {
+		return String();
+	}
+	const uint8_t *src = p_body.ptr();
+	bool has_nul = false;
+	for (int i = 0; i < p_body.size(); i++) {
+		if (src[i] == 0) {
+			has_nul = true;
+			break;
+		}
+	}
+	if (!has_nul) {
+		return String::utf8((const char *)p_body.ptr(), p_body.size());
+	}
+	PackedByteArray clean;
+	clean.resize(p_body.size());
+	uint8_t *dst = clean.ptrw();
+	int out = 0;
+	for (int i = 0; i < p_body.size(); i++) {
+		if (src[i] != 0) {
+			dst[out++] = src[i];
+		}
+	}
+	clean.resize(out);
+	return String::utf8((const char *)clean.ptr(), clean.size());
+}
 
 void AIAssistantDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_service_url", "url"), &AIAssistantDock::set_service_url);
 	ClassDB::bind_method(D_METHOD("get_service_url"), &AIAssistantDock::get_service_url);
 	ClassDB::bind_method(D_METHOD("is_connected_to_service"), &AIAssistantDock::is_connected_to_service);
-
-	ClassDB::bind_method(D_METHOD("_on_send_pressed"), &AIAssistantDock::_on_send_pressed);
-	ClassDB::bind_method(D_METHOD("_on_clear_pressed"), &AIAssistantDock::_on_clear_pressed);
-	ClassDB::bind_method(D_METHOD("_on_reconnect_pressed"), &AIAssistantDock::_on_reconnect_pressed);
-	ClassDB::bind_method(D_METHOD("_on_template_selected", "id"), &AIAssistantDock::_on_template_selected);
 	ClassDB::bind_method(D_METHOD("_check_service_health_deferred"), &AIAssistantDock::_check_service_health_deferred);
+
+	// UI handlers
+	ClassDB::bind_method(D_METHOD("_on_send_pressed"), &AIAssistantDock::_on_send_pressed);
+	ClassDB::bind_method(D_METHOD("_on_stop_pressed"), &AIAssistantDock::_on_stop_pressed);
+	ClassDB::bind_method(D_METHOD("_on_send_or_stop_pressed"), &AIAssistantDock::_on_send_or_stop_pressed);
+	ClassDB::bind_method(D_METHOD("_on_settings_pressed"), &AIAssistantDock::_on_settings_pressed);
+	ClassDB::bind_method(D_METHOD("_on_new_instance_pressed"), &AIAssistantDock::_on_new_instance_pressed);
+	ClassDB::bind_method(D_METHOD("_on_prompt_input_gui_input", "event"), &AIAssistantDock::_on_prompt_input_gui_input);
+	ClassDB::bind_method(D_METHOD("_on_prompt_text_changed"), &AIAssistantDock::_on_prompt_text_changed);
+	ClassDB::bind_method(D_METHOD("_on_chat_scroll_changed", "value"), &AIAssistantDock::_on_chat_scroll_changed);
+	ClassDB::bind_method(D_METHOD("_scroll_chat_to_bottom"), &AIAssistantDock::_scroll_chat_to_bottom);
+	ClassDB::bind_method(D_METHOD("_on_tool_meta_clicked", "meta"), &AIAssistantDock::_on_tool_meta_clicked);
+	ClassDB::bind_method(D_METHOD("_toggle_turn_collapse", "user_msg_index"), &AIAssistantDock::_toggle_turn_collapse);
+	ClassDB::bind_method(D_METHOD("_on_slash_hint_pressed", "id"), &AIAssistantDock::_on_slash_hint_pressed);
+	ClassDB::bind_method(D_METHOD("_on_remove_attachment", "index"), &AIAssistantDock::_on_remove_attachment);
+
+	// Image attachments
+	ClassDB::bind_method(D_METHOD("_on_attach_image_pressed"), &AIAssistantDock::_on_attach_image_pressed);
+	ClassDB::bind_method(D_METHOD("_on_screenshot_pressed"), &AIAssistantDock::_on_screenshot_pressed);
+	ClassDB::bind_method(D_METHOD("_on_image_files_selected", "paths"), &AIAssistantDock::_on_image_files_selected);
+	ClassDB::bind_method(D_METHOD("_on_files_dropped_on_dock", "files"), &AIAssistantDock::_on_files_dropped_on_dock);
+	ClassDB::bind_method(D_METHOD("_on_file_removed", "file"), &AIAssistantDock::_on_file_removed);
+
+	// HTTP request callbacks
+	ClassDB::bind_method(D_METHOD("_on_http_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_http_request_completed);
+	ClassDB::bind_method(D_METHOD("_on_settings_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_settings_request_completed);
+	ClassDB::bind_method(D_METHOD("_on_providers_status_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_providers_status_completed);
+	ClassDB::bind_method(D_METHOD("_on_provider_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_provider_request_completed);
+	ClassDB::bind_method(D_METHOD("_on_auth_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_auth_request_completed);
+	ClassDB::bind_method(D_METHOD("_on_stream_http_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_stream_http_request_completed);
+	ClassDB::bind_method(D_METHOD("_on_logs_http_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_logs_http_request_completed);
+	ClassDB::bind_method(D_METHOD("_on_command_http_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_command_http_request_completed);
+	ClassDB::bind_method(D_METHOD("_on_question_http_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_question_http_request_completed);
+	ClassDB::bind_method(D_METHOD("_on_session_list_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_session_list_completed);
+	ClassDB::bind_method(D_METHOD("_on_session_history_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_session_history_completed);
+	ClassDB::bind_method(D_METHOD("_on_session_history_list_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_session_history_list_completed);
+	ClassDB::bind_method(D_METHOD("_on_session_history_pressed"), &AIAssistantDock::_on_session_history_pressed);
+	ClassDB::bind_method(D_METHOD("_on_session_item_clicked", "index"), &AIAssistantDock::_on_session_item_clicked);
+	ClassDB::bind_method(D_METHOD("_on_session_new_pressed"), &AIAssistantDock::_on_session_new_pressed);
+	ClassDB::bind_method(D_METHOD("_on_session_delete_pressed", "index"), &AIAssistantDock::_on_session_delete_pressed);
+	ClassDB::bind_method(D_METHOD("_on_session_delete_confirmed"), &AIAssistantDock::_on_session_delete_confirmed);
+	ClassDB::bind_method(D_METHOD("_on_session_rename_pressed", "index"), &AIAssistantDock::_on_session_rename_pressed);
+	ClassDB::bind_method(D_METHOD("_on_session_rename_confirmed"), &AIAssistantDock::_on_session_rename_confirmed);
+	ClassDB::bind_method(D_METHOD("_on_session_rename_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_session_rename_completed);
+	ClassDB::bind_method(D_METHOD("cleanup_before_close"), &AIAssistantDock::cleanup_before_close);
+
+	// Settings
+	ClassDB::bind_method(D_METHOD("_on_replicate_test_pressed"), &AIAssistantDock::_on_replicate_test_pressed);
+	ClassDB::bind_method(D_METHOD("_on_meshy_test_pressed"), &AIAssistantDock::_on_meshy_test_pressed);
+	ClassDB::bind_method(D_METHOD("_on_settings_save_pressed"), &AIAssistantDock::_on_settings_save_pressed);
+	ClassDB::bind_method(D_METHOD("_on_generate_prompt_pressed"), &AIAssistantDock::_on_generate_prompt_pressed);
+	ClassDB::bind_method(D_METHOD("_on_engine_prompt_selected"), &AIAssistantDock::_on_engine_prompt_selected);
+
+	// Timers
+	ClassDB::bind_method(D_METHOD("_on_processing_timer_timeout"), &AIAssistantDock::_on_processing_timer_timeout);
+	ClassDB::bind_method(D_METHOD("_on_logs_poll_timeout"), &AIAssistantDock::_on_logs_poll_timeout);
+	ClassDB::bind_method(D_METHOD("_on_command_poll_timeout"), &AIAssistantDock::_on_command_poll_timeout);
+	ClassDB::bind_method(D_METHOD("_on_question_poll_timeout"), &AIAssistantDock::_on_question_poll_timeout);
+	ClassDB::bind_method(D_METHOD("_on_stream_poll_timeout"), &AIAssistantDock::_on_stream_poll_timeout);
+	ClassDB::bind_method(D_METHOD("_poll_oauth_callback"), &AIAssistantDock::_poll_oauth_callback);
+	ClassDB::bind_method(D_METHOD("_on_logs_refresh_pressed"), &AIAssistantDock::_on_logs_refresh_pressed);
+	ClassDB::bind_method(D_METHOD("_on_logs_clear_pressed"), &AIAssistantDock::_on_logs_clear_pressed);
+	ClassDB::bind_method(D_METHOD("_on_auth_code_submitted"), &AIAssistantDock::_on_auth_code_submitted);
+
+	// Model menu
+	ClassDB::bind_method(D_METHOD("_on_submenu_model_selected", "id"), &AIAssistantDock::_on_submenu_model_selected);
+
+	// Game lifecycle
+	ClassDB::bind_method(D_METHOD("_on_game_stopped"), &AIAssistantDock::_on_game_stopped);
+	ClassDB::bind_method(D_METHOD("_auto_verify_game_logs"), &AIAssistantDock::_auto_verify_game_logs);
+	ClassDB::bind_method(D_METHOD("_send_debugger_errors_to_ai"), &AIAssistantDock::_send_debugger_errors_to_ai);
+	ClassDB::bind_method(D_METHOD("_on_debugger_error", "file", "line", "debugger_id"), &AIAssistantDock::_on_debugger_error);
+
+	// Questions
+	ClassDB::bind_method(D_METHOD("_on_question_option_pressed", "option_index"), &AIAssistantDock::_on_question_option_pressed);
+	ClassDB::bind_method(D_METHOD("_on_question_custom_submitted"), &AIAssistantDock::_on_question_custom_submitted);
 }
 
+AIAssistantDock *AIAssistantDock::singleton = nullptr;
+
 AIAssistantDock::AIAssistantDock() {
+	singleton = this;
 	set_title(TTR("AI Assistant"));
 	set_icon_name(SNAME("Node"));
 	set_default_slot(DOCK_SLOT_RIGHT_UL);
+
+	// Prevent the dock from requesting excessive minimum height that would
+	// force the editor window to grow beyond the screen.
+	set_clip_contents(true);
 
 	_setup_ui();
 	_connect_signals();
 }
 
 AIAssistantDock::~AIAssistantDock() {
+	if (singleton == this) {
+		singleton = nullptr;
+	}
+}
+
+Size2 AIAssistantDock::get_minimum_size() const {
+	// Cap the dock's minimum height so it never forces the editor window
+	// to grow beyond the screen. The chat scroll container handles overflow.
+	Size2 ms = MarginContainer::get_minimum_size();
+	if (ms.height > 200) {
+		ms.height = 200;
+	}
+	return ms;
 }
 
 void AIAssistantDock::_setup_ui() {
-	// Main container for all UI
+	// Main container for all UI — use size flags (not anchors) so the
+	// MarginContainer correctly participates in minimum-size negotiation
+	// and the dock never forces the editor window to grow beyond the screen.
 	main_container = memnew(VBoxContainer);
-	main_container->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	main_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	main_container->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	add_child(main_container);
 
-	// Header
-	header_container = memnew(HBoxContainer);
-	main_container->add_child(header_container);
-
-	title_label = memnew(Label);
-	title_label->set_text("Makabaka AI");
-	title_label->add_theme_font_size_override("font_size", 16);
-	header_container->add_child(title_label);
-
-	header_container->add_spacer();
-
-	connection_indicator = memnew(ColorRect);
-	connection_indicator->set_custom_minimum_size(Size2(12, 12));
-	connection_indicator->set_color(Color(0.5, 0.5, 0.5));
-	header_container->add_child(connection_indicator);
-
-	// Toolbar
+	// Single toolbar row: session | model | settings | + | connection indicator
 	toolbar_container = memnew(HBoxContainer);
 	main_container->add_child(toolbar_container);
 
-	template_button = memnew(MenuButton);
-	template_button->set_text("Templates");
-	toolbar_container->add_child(template_button);
+	session_history_button = memnew(Button);
+	session_history_button->set_text("Sessions");
+	session_history_button->set_tooltip_text(TTR("Browse and switch between conversation sessions"));
+	toolbar_container->add_child(session_history_button);
 
-	PopupMenu *template_popup = template_button->get_popup();
-	template_popup->add_item("Platformer 2D", 0);
-	template_popup->add_item("Tower Defense", 1);
-	template_popup->add_item("RPG Top-Down", 2);
-	template_popup->add_item("Shooter Top-Down", 3);
-	template_popup->add_separator();
-	template_popup->add_item("Empty Project", 99);
+	// Custom popup panel for session list.
+	session_popup = memnew(PopupPanel);
+	session_popup->set_min_size(Size2(300, 0));
+	add_child(session_popup);
 
-	clear_button = memnew(Button);
-	clear_button->set_text("Clear");
-	toolbar_container->add_child(clear_button);
+	ScrollContainer *session_scroll = memnew(ScrollContainer);
+	session_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	session_scroll->set_custom_minimum_size(Size2(300, 200));
+	session_popup->add_child(session_scroll);
 
-	verify_button = memnew(Button);
-	verify_button->set_text("Verify");
-	verify_button->set_tooltip_text("Read game logs and verify with AI");
-	toolbar_container->add_child(verify_button);
+	session_popup_list = memnew(VBoxContainer);
+	session_popup_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	session_scroll->add_child(session_popup_list);
 
-	reconnect_button = memnew(Button);
-	reconnect_button->set_text("Connect");
-	toolbar_container->add_child(reconnect_button);
+	// Delete confirmation dialog for sessions.
+	session_delete_confirm = memnew(ConfirmationDialog);
+	session_delete_confirm->set_title(TTR("Delete Session"));
+	session_delete_confirm->set_text(TTR("Are you sure you want to delete this session?"));
+	add_child(session_delete_confirm);
+
+	// Rename dialog for sessions.
+	session_rename_dialog = memnew(AcceptDialog);
+	session_rename_dialog->set_title(TTR("Rename Session"));
+	session_rename_dialog->set_ok_button_text(TTR("Rename"));
+	VBoxContainer *rename_vbox = memnew(VBoxContainer);
+	session_rename_dialog->add_child(rename_vbox);
+	Label *rename_label = memnew(Label);
+	rename_label->set_text(TTR("New session title:"));
+	rename_vbox->add_child(rename_label);
+	session_rename_input = memnew(LineEdit);
+	session_rename_input->set_custom_minimum_size(Size2(300, 0));
+	rename_vbox->add_child(session_rename_input);
+	add_child(session_rename_dialog);
+
+	// HTTPRequest for session rename.
+	session_rename_http = memnew(HTTPRequest);
+	add_child(session_rename_http);
+
+	// Model selector (two-level submenu: Provider → Models)
+	model_button = memnew(MenuButton);
+	model_button->set_text("Select Model");
+	toolbar_container->add_child(model_button);
+
+	// Thinking mode toggle
+	thinking_toggle = memnew(CheckButton);
+	thinking_toggle->set_text("Think");
+	thinking_toggle->set_tooltip_text(TTR("Enable extended thinking mode (Claude/Gemini models)"));
+	thinking_toggle->set_pressed(false);
+	toolbar_container->add_child(thinking_toggle);
+
+	toolbar_container->add_spacer();
 
 	settings_button = memnew(Button);
 	settings_button->set_text("Settings");
 	settings_button->set_tooltip_text("Configure AI asset generation providers");
 	toolbar_container->add_child(settings_button);
 
-	toolbar_container->add_spacer();
+	// New instance button ("+")
+	new_instance_button = memnew(Button);
+	new_instance_button->set_text("+");
+	new_instance_button->set_tooltip_text(TTR("Open new AI Assistant"));
+	toolbar_container->add_child(new_instance_button);
 
-	status_label = memnew(Label);
-	status_label->set_text("Disconnected");
-	status_label->add_theme_font_size_override("font_size", 11);
-	toolbar_container->add_child(status_label);
+	connection_indicator = memnew(ColorRect);
+	connection_indicator->set_custom_minimum_size(Size2(12, 12));
+	connection_indicator->set_color(Color(0.5, 0.5, 0.5));
+	toolbar_container->add_child(connection_indicator);
 
-	// Model selector (two-level submenu: Provider → Models)
-	model_button = memnew(MenuButton);
-	model_button->set_text("Select Model");
-	model_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	main_container->add_child(model_button);
-
-	// Tab container for Chat and Logs
-	tab_container = memnew(TabContainer);
-	tab_container->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	main_container->add_child(tab_container);
-
-	// === Chat Tab ===
+	// === Chat Area (directly in main container, no tabs) ===
 	chat_tab = memnew(VBoxContainer);
-	chat_tab->set_name("Chat");
-	tab_container->add_child(chat_tab);
-
-	// Chat toolbar with mode toggles and auto-scroll
-	HBoxContainer *chat_toolbar = memnew(HBoxContainer);
-	chat_tab->add_child(chat_toolbar);
-
-	// Plan mode toggle
-	plan_mode_toggle = memnew(CheckButton);
-	plan_mode_toggle->set_text("Plan");
-	plan_mode_toggle->set_tooltip_text("Plan mode: AI will create a plan before making changes");
-	plan_mode_toggle->set_pressed(false);
-	chat_toolbar->add_child(plan_mode_toggle);
-
-	// Auto-accept edits toggle
-	auto_accept_toggle = memnew(CheckButton);
-	auto_accept_toggle->set_text("Auto-accept");
-	auto_accept_toggle->set_tooltip_text("Auto-accept: Automatically approve file edits");
-	auto_accept_toggle->set_pressed(false);
-	chat_toolbar->add_child(auto_accept_toggle);
-
-	chat_toolbar->add_spacer();
-
-	chat_auto_scroll = memnew(CheckButton);
-	chat_auto_scroll->set_text("Auto-scroll");
-	chat_auto_scroll->set_pressed(true);
-	chat_toolbar->add_child(chat_auto_scroll);
+	chat_tab->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	main_container->add_child(chat_tab);
 
 	// Sticky header — pins current user question at top of chat scroll
 	sticky_header = memnew(PanelContainer);
@@ -192,7 +303,7 @@ void AIAssistantDock::_setup_ui() {
 	chat_container = memnew(VBoxContainer);
 	chat_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->add_child(chat_container);
-	chat_container->connect("resized", callable_mp(this, &AIAssistantDock::_scroll_chat_to_bottom));
+	chat_container->connect("resized", Callable(this, "_scroll_chat_to_bottom"));
 
 	// Welcome message
 	RichTextLabel *welcome = memnew(RichTextLabel);
@@ -201,7 +312,7 @@ void AIAssistantDock::_setup_ui() {
 	welcome->set_selection_enabled(true);
 	welcome->set_context_menu_enabled(true);
 	welcome->set_focus_mode(Control::FOCUS_CLICK);
-	welcome->set_text("[color=gray]Welcome to Makabaka AI![/color]\n\nDescribe what you want to create, or select a template to get started.\n\n[color=cyan]Examples:[/color]\n- \"Create a 2D platformer\"\n- \"Add a player character\"\n- \"Make the enemy follow the player\"\n\n[color=yellow]Connecting to AI service...[/color]");
+	welcome->set_text("[color=yellow]Connecting to AI service...[/color]");
 	chat_container->add_child(welcome);
 
 	// Separator
@@ -238,17 +349,20 @@ void AIAssistantDock::_setup_ui() {
 	attach_image_button->set_tooltip_text("Attach image(s) - PNG, JPG, WebP, GIF (max 10 MB each)");
 	button_container->add_child(attach_image_button);
 
+	screenshot_button = memnew(Button);
+	screenshot_button->set_text(U"\U0001F4F7");
+	screenshot_button->set_tooltip_text(TTR("Capture game screenshot and send for AI analysis (game must be running)"));
+	button_container->add_child(screenshot_button);
+
 	send_button = memnew(Button);
 	send_button->set_text("Send (Enter)");
 	send_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	button_container->add_child(send_button);
 
-	stop_button = memnew(Button);
-	stop_button->set_text("Stop");
-	stop_button->set_tooltip_text("Stop AI processing");
-	stop_button->set_visible(false); // Hidden by default, shown during processing
-	stop_button->add_theme_color_override("font_color", Color(1.0, 0.4, 0.4));
-	button_container->add_child(stop_button);
+	// Disable input until connected.
+	prompt_input->set_editable(false);
+	prompt_input->set_placeholder(TTR("Connecting to AI service..."));
+	send_button->set_disabled(true);
 
 	// Slash command autocomplete (inline container above prompt_input)
 	slash_hint_container = memnew(VBoxContainer);
@@ -342,6 +456,10 @@ void AIAssistantDock::_setup_ui() {
 	session_list_http_request = memnew(HTTPRequest);
 	add_child(session_list_http_request);
 
+	// HTTP Request node for session history menu
+	session_history_list_http = memnew(HTTPRequest);
+	add_child(session_history_list_http);
+
 	// HTTP Request node for OAuth auth flow
 	http_auth_request = memnew(HTTPRequest);
 	add_child(http_auth_request);
@@ -371,15 +489,21 @@ void AIAssistantDock::_setup_ui() {
 	auth_code_dialog->add_child(dialog_vbox);
 	add_child(auth_code_dialog);
 
-	// Settings dialog (asset provider configuration)
+	// Settings dialog (asset providers + prompt management)
 	settings_dialog = memnew(AcceptDialog);
-	settings_dialog->set_title("Asset Provider Settings");
+	settings_dialog->set_title("Settings");
 	settings_dialog->set_ok_button_text("Save");
-	settings_dialog->set_min_size(Size2(450, 0));
+	settings_dialog->set_min_size(Size2(550, 500));
 
-	VBoxContainer *settings_vbox = memnew(VBoxContainer);
+	settings_tabs = memnew(TabContainer);
+	settings_tabs->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
-	// ── Replicate (2D textures) ──
+	// ── Tab 0: Providers ──
+	VBoxContainer *providers_tab = memnew(VBoxContainer);
+	providers_tab->set_name("Providers");
+	settings_tabs->add_child(providers_tab);
+
+	// Replicate (2D textures)
 	HBoxContainer *replicate_header = memnew(HBoxContainer);
 	Label *replicate_label = memnew(Label);
 	replicate_label->set_text("Replicate API Token:");
@@ -393,21 +517,21 @@ void AIAssistantDock::_setup_ui() {
 	replicate_status_label->add_theme_font_size_override("font_size", 11);
 	replicate_status_label->set_custom_minimum_size(Size2(80, 0));
 	replicate_header->add_child(replicate_status_label);
-	settings_vbox->add_child(replicate_header);
+	providers_tab->add_child(replicate_header);
 
 	Label *replicate_hint = memnew(Label);
 	replicate_hint->set_text("Get your token from replicate.com/account/api-tokens");
 	replicate_hint->add_theme_font_size_override("font_size", 11);
 	replicate_hint->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
-	settings_vbox->add_child(replicate_hint);
+	providers_tab->add_child(replicate_hint);
 
 	replicate_token_input = memnew(LineEdit);
 	replicate_token_input->set_placeholder("r8_...");
 	replicate_token_input->set_secret(true);
-	settings_vbox->add_child(replicate_token_input);
+	providers_tab->add_child(replicate_token_input);
 
-	// ── Meshy (3D models) ──
-	settings_vbox->add_child(memnew(HSeparator));
+	// Meshy (3D models)
+	providers_tab->add_child(memnew(HSeparator));
 
 	HBoxContainer *meshy_header = memnew(HBoxContainer);
 	Label *meshy_label = memnew(Label);
@@ -422,28 +546,83 @@ void AIAssistantDock::_setup_ui() {
 	meshy_status_label->add_theme_font_size_override("font_size", 11);
 	meshy_status_label->set_custom_minimum_size(Size2(80, 0));
 	meshy_header->add_child(meshy_status_label);
-	settings_vbox->add_child(meshy_header);
+	providers_tab->add_child(meshy_header);
 
 	Label *meshy_hint = memnew(Label);
 	meshy_hint->set_text("Get your key from meshy.ai — used for AI 3D model generation");
 	meshy_hint->add_theme_font_size_override("font_size", 11);
 	meshy_hint->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
-	settings_vbox->add_child(meshy_hint);
+	providers_tab->add_child(meshy_hint);
 
 	meshy_token_input = memnew(LineEdit);
 	meshy_token_input->set_placeholder("msy_...");
 	meshy_token_input->set_secret(true);
-	settings_vbox->add_child(meshy_token_input);
+	providers_tab->add_child(meshy_token_input);
 
-	settings_dialog->add_child(settings_vbox);
+	// ── Tab 1: Prompt ──
+	VBoxContainer *prompt_tab = memnew(VBoxContainer);
+	prompt_tab->set_name("Prompt");
+	settings_tabs->add_child(prompt_tab);
+
+	// Project Prompt section header
+	Label *project_section = memnew(Label);
+	project_section->set_text("Project Prompt");
+	project_section->add_theme_font_size_override("font_size", 14);
+	prompt_tab->add_child(project_section);
+
+	project_prompt_path_label = memnew(Label);
+	project_prompt_path_label->set_text("Path: (loading...)");
+	project_prompt_path_label->add_theme_font_size_override("font_size", 11);
+	project_prompt_path_label->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
+	prompt_tab->add_child(project_prompt_path_label);
+
+	project_prompt_edit = memnew(TextEdit);
+	project_prompt_edit->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	project_prompt_edit->set_custom_minimum_size(Size2(0, 200));
+	project_prompt_edit->set_placeholder("Write project-specific AI instructions here...\nThis file is read by the AI as context for every conversation.");
+	project_prompt_edit->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
+	prompt_tab->add_child(project_prompt_edit);
+
+	HBoxContainer *prompt_buttons = memnew(HBoxContainer);
+	generate_prompt_button = memnew(Button);
+	generate_prompt_button->set_text("Generate Template");
+	generate_prompt_button->set_tooltip_text("Scan project and generate an initial prompt template");
+	prompt_buttons->add_child(generate_prompt_button);
+	prompt_tab->add_child(prompt_buttons);
+
+	// Engine Prompts section (read-only)
+	prompt_tab->add_child(memnew(HSeparator));
+
+	Label *engine_section = memnew(Label);
+	engine_section->set_text("Engine Prompts (Read-Only)");
+	engine_section->add_theme_font_size_override("font_size", 14);
+	prompt_tab->add_child(engine_section);
+
+	engine_prompt_tree = memnew(Tree);
+	engine_prompt_tree->set_custom_minimum_size(Size2(0, 100));
+	engine_prompt_tree->set_hide_root(true);
+	engine_prompt_tree->set_v_size_flags(Control::SIZE_SHRINK_BEGIN);
+	prompt_tab->add_child(engine_prompt_tree);
+
+	engine_prompt_preview = memnew(RichTextLabel);
+	engine_prompt_preview->set_custom_minimum_size(Size2(0, 100));
+	engine_prompt_preview->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	engine_prompt_preview->set_selection_enabled(true);
+	engine_prompt_preview->set_use_bbcode(false);
+	engine_prompt_preview->set_text("Select an engine prompt file above to preview its contents.");
+	prompt_tab->add_child(engine_prompt_preview);
+
+	settings_dialog->add_child(settings_tabs);
 	add_child(settings_dialog);
 
 	settings_http_request = memnew(HTTPRequest);
 	add_child(settings_http_request);
-	settings_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_settings_request_completed));
-	replicate_test_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_replicate_test_pressed));
-	meshy_test_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_meshy_test_pressed));
-	settings_dialog->connect("confirmed", callable_mp(this, &AIAssistantDock::_on_settings_save_pressed));
+	settings_http_request->connect("request_completed", Callable(this, "_on_settings_request_completed"));
+	replicate_test_button->connect("pressed", Callable(this, "_on_replicate_test_pressed"));
+	meshy_test_button->connect("pressed", Callable(this, "_on_meshy_test_pressed"));
+	generate_prompt_button->connect("pressed", Callable(this, "_on_generate_prompt_pressed"));
+	engine_prompt_tree->connect("item_selected", Callable(this, "_on_engine_prompt_selected"));
+	settings_dialog->connect("confirmed", Callable(this, "_on_settings_save_pressed"));
 
 	// Tool detail viewer popup (shows full input/output on click)
 	tool_detail_dialog = memnew(AcceptDialog);
@@ -463,9 +642,11 @@ void AIAssistantDock::_setup_ui() {
 }
 
 void AIAssistantDock::_setup_logs_tab() {
+	// Logs panel is hidden but still in tree so log entries can be appended.
 	logs_tab = memnew(VBoxContainer);
 	logs_tab->set_name("Logs");
-	tab_container->add_child(logs_tab);
+	logs_tab->set_visible(false);
+	main_container->add_child(logs_tab);
 
 	// Logs toolbar
 	logs_toolbar = memnew(HBoxContainer);
@@ -506,64 +687,64 @@ void AIAssistantDock::_setup_logs_tab() {
 
 void AIAssistantDock::_connect_signals() {
 	// Chat signals
-	send_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_send_pressed));
-	stop_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_stop_pressed));
-	clear_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_clear_pressed));
-	verify_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_verify_pressed));
-	reconnect_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_reconnect_pressed));
-	settings_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_settings_pressed));
-	template_button->get_popup()->connect("id_pressed", callable_mp(this, &AIAssistantDock::_on_template_selected));
-	prompt_input->connect("gui_input", callable_mp(this, &AIAssistantDock::_on_prompt_input_gui_input));
-	prompt_input->connect("text_changed", callable_mp(this, &AIAssistantDock::_on_prompt_text_changed));
-	http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_http_request_completed));
+	send_button->connect("pressed", Callable(this, "_on_send_or_stop_pressed"));
+	settings_button->connect("pressed", Callable(this, "_on_settings_pressed"));
+	new_instance_button->connect("pressed", Callable(this, "_on_new_instance_pressed"));
+	prompt_input->connect("gui_input", Callable(this, "_on_prompt_input_gui_input"));
+	prompt_input->connect("text_changed", Callable(this, "_on_prompt_text_changed"));
+	http_request->connect("request_completed", Callable(this, "_on_http_request_completed"));
 
 	// Image attachment signals
-	attach_image_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_attach_image_pressed));
-	image_file_dialog->connect("files_selected", callable_mp(this, &AIAssistantDock::_on_image_files_selected));
+	attach_image_button->connect("pressed", Callable(this, "_on_attach_image_pressed"));
+	image_file_dialog->connect("files_selected", Callable(this, "_on_image_files_selected"));
+	screenshot_button->connect("pressed", Callable(this, "_on_screenshot_pressed"));
 
 	// Sticky header scroll tracking
-	chat_scroll->get_v_scroll_bar()->connect("value_changed", callable_mp(this, &AIAssistantDock::_on_chat_scroll_changed));
-
-	// Mode toggles
-	plan_mode_toggle->connect("toggled", callable_mp(this, &AIAssistantDock::_on_plan_mode_toggled));
-	auto_accept_toggle->connect("toggled", callable_mp(this, &AIAssistantDock::_on_auto_accept_toggled));
+	chat_scroll->get_v_scroll_bar()->connect("value_changed", Callable(this, "_on_chat_scroll_changed"));
 
 	// Processing indicator
-	processing_timer->connect("timeout", callable_mp(this, &AIAssistantDock::_on_processing_timer_timeout));
+	processing_timer->connect("timeout", Callable(this, "_on_processing_timer_timeout"));
 
 	// Logs signals
-	logs_refresh_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_logs_refresh_pressed));
-	logs_clear_button->connect("pressed", callable_mp(this, &AIAssistantDock::_on_logs_clear_pressed));
-	logs_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_logs_http_request_completed));
-	logs_poll_timer->connect("timeout", callable_mp(this, &AIAssistantDock::_on_logs_poll_timeout));
+	logs_refresh_button->connect("pressed", Callable(this, "_on_logs_refresh_pressed"));
+	logs_clear_button->connect("pressed", Callable(this, "_on_logs_clear_pressed"));
+	logs_http_request->connect("request_completed", Callable(this, "_on_logs_http_request_completed"));
+	logs_poll_timer->connect("timeout", Callable(this, "_on_logs_poll_timeout"));
 
 	// Command polling signals (auto-run from OpenCode)
-	command_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_command_http_request_completed));
-	command_poll_timer->connect("timeout", callable_mp(this, &AIAssistantDock::_on_command_poll_timeout));
+	command_http_request->connect("request_completed", Callable(this, "_on_command_http_request_completed"));
+	command_poll_timer->connect("timeout", Callable(this, "_on_command_poll_timeout"));
 
 	// Question polling signals (AI asking user questions)
-	question_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_question_http_request_completed));
-	question_poll_timer->connect("timeout", callable_mp(this, &AIAssistantDock::_on_question_poll_timeout));
+	question_http_request->connect("request_completed", Callable(this, "_on_question_http_request_completed"));
+	question_poll_timer->connect("timeout", Callable(this, "_on_question_poll_timeout"));
 
 	// Stream polling signals (for intermediate steps during AI processing)
-	stream_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_stream_http_request_completed));
-	stream_poll_timer->connect("timeout", callable_mp(this, &AIAssistantDock::_on_stream_poll_timeout));
+	stream_http_request->connect("request_completed", Callable(this, "_on_stream_http_request_completed"));
+	stream_poll_timer->connect("timeout", Callable(this, "_on_stream_poll_timeout"));
 
 	// Provider/model fetching signals (submenu signals connected in _populate_model_menu)
-	model_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_provider_request_completed));
+	model_http_request->connect("request_completed", Callable(this, "_on_provider_request_completed"));
 
 	// Auth flow signals
-	http_auth_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_auth_request_completed));
-	auth_code_dialog->connect("confirmed", callable_mp(this, &AIAssistantDock::_on_auth_code_submitted));
-	auth_poll_timer->connect("timeout", callable_mp(this, &AIAssistantDock::_poll_oauth_callback));
+	http_auth_request->connect("request_completed", Callable(this, "_on_auth_request_completed"));
+	auth_code_dialog->connect("confirmed", Callable(this, "_on_auth_code_submitted"));
+	auth_poll_timer->connect("timeout", Callable(this, "_poll_oauth_callback"));
 
 	// Session list signals (for finding existing sessions)
-	session_list_http_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_session_list_completed));
+	session_list_http_request->connect("request_completed", Callable(this, "_on_session_list_completed"));
+
+	// Session history panel signals
+	session_history_list_http->connect("request_completed", Callable(this, "_on_session_history_list_completed"));
+	session_history_button->connect("pressed", Callable(this, "_on_session_history_pressed"));
+	session_delete_confirm->connect("confirmed", Callable(this, "_on_session_delete_confirmed"));
+	session_rename_dialog->connect("confirmed", Callable(this, "_on_session_rename_confirmed"));
+	session_rename_http->connect("request_completed", Callable(this, "_on_session_rename_completed"));
 
 	// Game stop signal for auto-verification
 	EditorRunBar *run_bar = EditorRunBar::get_singleton();
 	if (run_bar) {
-		run_bar->connect("stop_pressed", callable_mp(this, &AIAssistantDock::_on_game_stopped));
+		run_bar->connect("stop_pressed", Callable(this, "_on_game_stopped"));
 	}
 
 	// Debugger error monitoring - connect in NOTIFICATION_READY since EditorDebuggerNode may not be ready yet
@@ -572,26 +753,30 @@ void AIAssistantDock::_connect_signals() {
 void AIAssistantDock::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
+			// Load available skills from docs/skills/
+			_load_skills();
 			// Auto-connect to AI service on startup
 			call_deferred("_check_service_health_deferred");
 			// Enable process to poll for debugger errors
 			set_process(true);
 			// Connect to viewport files_dropped for external drag-and-drop
 			get_tree()->get_root()->connect("files_dropped",
-					callable_mp(this, &AIAssistantDock::_on_files_dropped_on_dock));
-		} break;
-
-		case NOTIFICATION_READY: {
-			// Connect to debugger error signals
-			EditorDebuggerNode *debugger = EditorDebuggerNode::get_singleton();
-			if (debugger) {
-				debugger->connect("error_selected", callable_mp(this, &AIAssistantDock::_on_debugger_error));
+					Callable(this, "_on_files_dropped_on_dock"));
+			// Listen for file deletions to clean up AI metadata
+			FileSystemDock *fs_dock = EditorInterface::get_singleton()->get_file_system_dock();
+			if (fs_dock) {
+				fs_dock->connect("file_removed", Callable(this, "_on_file_removed"));
 			}
 		} break;
 
+		case NOTIFICATION_READY: {
+			// Debugger error monitoring is handled via NOTIFICATION_PROCESS polling.
+			// EditorDebuggerNode does not expose an error signal we can connect to.
+		} break;
+
 		case NOTIFICATION_PROCESS: {
-			// Poll for new debugger errors while game is running
-			if (EditorInterface::get_singleton()->is_playing_scene()) {
+			// Only primary instance polls for debugger errors.
+			if (instance_id == 0 && EditorInterface::get_singleton()->is_playing_scene()) {
 				_check_debugger_errors();
 			}
 		} break;
@@ -600,9 +785,14 @@ void AIAssistantDock::_notification(int p_what) {
 			// Disconnect files_dropped signal
 			if (get_tree() && get_tree()->get_root() &&
 					get_tree()->get_root()->is_connected("files_dropped",
-							callable_mp(this, &AIAssistantDock::_on_files_dropped_on_dock))) {
+							Callable(this, "_on_files_dropped_on_dock"))) {
 				get_tree()->get_root()->disconnect("files_dropped",
-						callable_mp(this, &AIAssistantDock::_on_files_dropped_on_dock));
+						Callable(this, "_on_files_dropped_on_dock"));
+			}
+			// Disconnect file_removed signal
+			FileSystemDock *fsd = EditorInterface::get_singleton()->get_file_system_dock();
+			if (fsd && fsd->is_connected("file_removed", Callable(this, "_on_file_removed"))) {
+				fsd->disconnect("file_removed", Callable(this, "_on_file_removed"));
 			}
 			// Stop timers
 			if (logs_poll_timer && logs_poll_timer->is_inside_tree()) {
@@ -704,7 +894,9 @@ String AIAssistantDock::_load_coding_standards() {
 	md_files.sort();
 
 	// Read and combine all files.
-	String combined = "[CODING STANDARDS] Follow these rules when generating or modifying GDScript game code.\n\n";
+	String combined = "[IMPORTANT RULES]\n"
+			"1. Always reply in the SAME LANGUAGE as the user's message. If the user writes in Chinese, reply in Chinese. If in English, reply in English.\n"
+			"2. Follow these coding standards when generating or modifying GDScript game code.\n\n";
 
 	for (int i = 0; i < md_files.size(); i++) {
 		Ref<FileAccess> f = FileAccess::open(md_files[i], FileAccess::READ);
@@ -727,6 +919,139 @@ String AIAssistantDock::_load_coding_standards() {
 	return _cached_coding_standards;
 }
 
+void AIAssistantDock::_load_skills() {
+	available_skills.clear();
+
+	// Skills live at <engine_root>/docs/skills/<name>/SKILL.md
+	String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+	String skills_dir = exe_dir.path_join("..").path_join("..").path_join("docs").path_join("skills").simplify_path();
+
+	Ref<DirAccess> dir = DirAccess::open(skills_dir);
+	if (dir.is_null()) {
+		print_line("[AIAssistant] No skills directory found: " + skills_dir);
+		return;
+	}
+
+	dir->list_dir_begin();
+	String entry = dir->get_next();
+	while (!entry.is_empty()) {
+		if (dir->current_is_dir() && entry != "." && entry != "..") {
+			String skill_path = skills_dir.path_join(entry).path_join("SKILL.md");
+			Ref<FileAccess> f = FileAccess::open(skill_path, FileAccess::READ);
+			if (f.is_valid()) {
+				String raw = f->get_as_text();
+
+				SkillInfo skill;
+				skill.name = entry; // Directory name is the skill name
+
+				// Parse YAML frontmatter (between --- delimiters)
+				if (raw.begins_with("---")) {
+					int end_idx = raw.find("---", 3);
+					if (end_idx >= 0) {
+						String frontmatter = raw.substr(3, end_idx - 3).strip_edges();
+						skill.content = raw.substr(end_idx + 3).strip_edges();
+
+						// Parse simple key: value pairs from frontmatter
+						PackedStringArray lines = frontmatter.split("\n");
+						for (int i = 0; i < lines.size(); i++) {
+							String line = lines[i].strip_edges();
+							int colon = line.find(":");
+							if (colon < 0) {
+								continue;
+							}
+							String key = line.substr(0, colon).strip_edges();
+							String value = line.substr(colon + 1).strip_edges();
+							if (key == "name") {
+								skill.name = value;
+							} else if (key == "description") {
+								skill.description = value;
+							} else if (key == "auto_detect") {
+								skill.auto_detect = value;
+							} else if (key == "auto_detect_attachment") {
+								skill.auto_detect_attachment = value;
+							}
+						}
+					} else {
+						skill.content = raw;
+					}
+				} else {
+					skill.content = raw;
+				}
+
+				available_skills.push_back(skill);
+				print_line("[AIAssistant] Loaded skill: /" + skill.name + " — " + skill.description.substr(0, 60));
+			}
+		}
+		entry = dir->get_next();
+	}
+	dir->list_dir_end();
+
+	print_line("[AIAssistant] Loaded " + itos(available_skills.size()) + " skills from " + skills_dir);
+}
+
+String AIAssistantDock::_get_active_skill_content(const String &p_user_message, bool p_has_image_attachment) const {
+	String lower = p_user_message.to_lower();
+
+	for (int i = 0; i < available_skills.size(); i++) {
+		const SkillInfo &skill = available_skills[i];
+
+		bool matched = false;
+
+		// Check text-based auto_detect patterns
+		if (!skill.auto_detect.is_empty()) {
+			PackedStringArray patterns = skill.auto_detect.split("|");
+			for (int j = 0; j < patterns.size(); j++) {
+				String pattern = patterns[j].strip_edges();
+				if (pattern.is_empty()) {
+					continue;
+				}
+
+				// Split pattern on .* to do a simple multi-part contains check
+				// e.g., "create.*game" matches if "create" and "game" both appear in order
+				PackedStringArray parts = pattern.split(".*");
+				bool match = true;
+				int search_from = 0;
+				for (int k = 0; k < parts.size(); k++) {
+					String part = parts[k].strip_edges();
+					if (part.is_empty()) {
+						continue;
+					}
+					int found = lower.find(part, search_from);
+					if (found < 0) {
+						match = false;
+						break;
+					}
+					search_from = found + part.length();
+				}
+
+				if (match) {
+					matched = true;
+					break;
+				}
+			}
+		}
+
+		// Check attachment-based auto_detect_attachment
+		if (!matched && !skill.auto_detect_attachment.is_empty()) {
+			if (skill.auto_detect_attachment == "image" && p_has_image_attachment) {
+				matched = true;
+			}
+		}
+
+		if (matched) {
+			print_line("[AIAssistant] Auto-detected skill: /" + skill.name + (p_has_image_attachment ? " (attachment trigger)" : " (text pattern)"));
+			return "<skill-instructions name=\"" + skill.name + "\">\n"
+					"You MUST follow these instructions. Do NOT repeat or echo them.\n"
+					"Do NOT output the skill content as your response.\n"
+					"Instead, execute the workflow described below step by step.\n\n"
+					+ skill.content
+					+ "\n</skill-instructions>";
+		}
+	}
+
+	return "";
+}
+
 Vector<String> AIAssistantDock::_get_headers_with_directory() const {
 	Vector<String> headers;
 	headers.push_back("Content-Type: application/json");
@@ -737,6 +1062,7 @@ Vector<String> AIAssistantDock::_get_headers_with_directory() const {
 
 void AIAssistantDock::_check_service_health() {
 	if (pending_request != REQUEST_NONE) {
+		print_line("[AIAssistant] Health check skipped: pending_request=" + String::num_int64(pending_request));
 		return;
 	}
 
@@ -746,19 +1072,33 @@ void AIAssistantDock::_check_service_health() {
 	_update_connection_indicator();
 
 	String url = service_url + "/global/health";
+	print_line("[AIAssistant] Health check → " + url);
 	Vector<String> headers = _get_headers_with_directory();
-	http_request->request(url, headers);
+	Error err = http_request->request(url, headers);
+	if (err != OK) {
+		print_line("[AIAssistant] Health check request failed immediately: error=" + String::num_int64(err));
+		pending_request = REQUEST_NONE;
+		connection_status = CONNECTION_ERROR;
+		_update_status("Request failed (err " + String::num_int64(err) + ")", Color(1, 0, 0));
+		_update_connection_indicator();
+		_add_system_message("Failed to send health check request. Error code: " + String::num_int64(err));
+	}
 }
 
 void AIAssistantDock::_create_session() {
 	if (pending_request != REQUEST_NONE) {
+		print_line("[AIAssistant] Create session skipped: pending_request=" + String::num_int64(pending_request));
 		return;
 	}
+
+	// New session → no stale messages to ignore
+	ignore_assistant_message_id = "";
 
 	pending_request = REQUEST_SESSION;
 	_update_status("Creating session...", Color(1, 1, 0));
 
 	String url = service_url + "/session?directory=" + _get_project_directory().uri_encode();
+	print_line("[AIAssistant] Creating session → " + url);
 	Dictionary body;
 	// Session creation body (can be empty, directory is in header/query)
 
@@ -784,6 +1124,7 @@ void AIAssistantDock::_send_message(const String &p_content) {
 		return;
 	}
 
+	has_user_message = true;
 	pending_request = REQUEST_MESSAGE;
 	_update_status("Processing...", Color(1, 1, 0));
 	_show_processing();
@@ -805,27 +1146,73 @@ void AIAssistantDock::_send_message(const String &p_content) {
 	// Build parts array for the message
 	Array parts;
 
-	// Inject coding standards as a separate part on first message of each session.
+	// Inject coding standards + base rules on first message of each session.
 	// Sent as its own part so it's hidden from the chat UI (filtered in _add_user_message).
 	if (!coding_standards_injected) {
+		coding_standards_injected = true;
 		String standards = _load_coding_standards();
-		if (!standards.is_empty()) {
-			coding_standards_injected = true;
-			Dictionary standards_part;
-			standards_part["type"] = "text";
-			standards_part["text"] = standards;
-			parts.push_back(standards_part);
+		if (standards.is_empty()) {
+			// Even without coding standards files, inject base rules.
+			standards = "[IMPORTANT RULES]\n"
+					"1. Always reply in the SAME LANGUAGE as the user's message. If the user writes in Chinese, reply in Chinese. If in English, reply in English.\n";
+		}
+		Dictionary standards_part;
+		standards_part["type"] = "text";
+		standards_part["text"] = standards;
+		parts.push_back(standards_part);
+	}
+
+	// Inject project context (worldbuilding + visual bible) on every message for ALL instances.
+	// The context is dynamic — it changes based on whether docs/worldbuilding.md exists.
+	{
+		String project_context = AIAssistantManager::get_singleton()->build_project_context();
+		if (!project_context.is_empty()) {
+			Dictionary ctx_part;
+			ctx_part["type"] = "text";
+			ctx_part["text"] = project_context;
+			parts.push_back(ctx_part);
 		}
 	}
 
-	// Build the user message with mode prefixes
+	// Inject currently selected file(s) from the FileSystem dock.
+	// This lets the AI know which asset/file the user is looking at.
+	{
+		FileSystemDock *fs_dock = FileSystemDock::get_singleton();
+		if (fs_dock) {
+			Vector<String> selected = fs_dock->get_selected_paths();
+			if (!selected.is_empty()) {
+				String sel_ctx = "[SELECTED FILE(S) in FileSystem dock]\n";
+				for (const String &p : selected) {
+					sel_ctx += "- " + p + "\n";
+				}
+				Dictionary sel_part;
+				sel_part["type"] = "text";
+				sel_part["text"] = sel_ctx;
+				parts.push_back(sel_part);
+			}
+		}
+	}
+
+	// Auto-detect skills from user message content or attachments (only if not already a skill invocation).
+	// Skill content is injected as a hidden part before the user message.
+	if (!p_content.contains("<skill-instructions")) {
+		bool has_image_attachment = false;
+		for (int i = 0; i < pending_attachments.size(); i++) {
+			if (pending_attachments[i].mime_type.begins_with("image/")) {
+				has_image_attachment = true;
+				break;
+			}
+		}
+		String skill_content = _get_active_skill_content(p_content, has_image_attachment);
+		if (!skill_content.is_empty()) {
+			Dictionary skill_part;
+			skill_part["type"] = "text";
+			skill_part["text"] = skill_content;
+			parts.push_back(skill_part);
+		}
+	}
+
 	String message_content = p_content;
-	if (is_plan_mode) {
-		message_content = "[PLAN MODE] Before making any changes, first create a detailed plan and present it for approval. Do not make changes until the plan is approved.\n\n" + message_content;
-	}
-	if (is_auto_accept) {
-		message_content = "[AUTO-ACCEPT] You have permission to automatically apply all file edits without asking for confirmation.\n\n" + message_content;
-	}
 
 	Dictionary text_part;
 	text_part["type"] = "text";
@@ -855,12 +1242,18 @@ void AIAssistantDock::_send_message(const String &p_content) {
 		body["model"] = model;
 	}
 
+	// Include thinking variant when toggle is on
+	if (thinking_toggle->is_pressed()) {
+		body["variant"] = "high";
+	}
+
 	String json_body = JSON::stringify(body);
 	http_request->request(url, _get_headers_with_directory(), HTTPClient::METHOD_POST, json_body);
 }
 
 void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	RequestType request_type = pending_request;
+	print_line("[AIAssistant] HTTP completed: request_type=" + String::num_int64(request_type) + " result=" + String::num_int64(p_result) + " code=" + String::num_int64(p_code) + " body_size=" + String::num_int64(p_body.size()));
 
 	// Handle prompt_async endpoint which returns 204 No Content
 	// The AI processes in background and we poll for the response via stream polling
@@ -935,7 +1328,7 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	String response_text = _body_to_string(p_body);
 	JSON json;
 	Error err = json.parse(response_text);
 
@@ -963,10 +1356,21 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 			if (p_code == 200 && response_data.has("id")) {
 				session_id = response_data["id"];
 				coding_standards_injected = false;
+				has_user_message = false;
 				connection_status = CONNECTED;
 				_update_status("Connected", Color(0, 1, 0));
 				_update_connection_indicator();
-				reconnect_button->set_text("Disconnect");
+
+				session_history_button->set_text("New Session");
+				// Re-enable input (was disabled during connecting).
+				prompt_input->set_editable(true);
+				prompt_input->set_placeholder(TTR("Type a message..."));
+				send_button->set_disabled(false);
+
+				// Clear "Connecting..." text and show welcome for new session.
+				_clear_chat_ui();
+				_show_welcome_message();
+
 				_add_system_message("Connected to AI service! Session: " + session_id.substr(0, 8) + "...");
 				_add_system_message("Project directory: " + _get_project_directory());
 
@@ -998,6 +1402,7 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 		case REQUEST_DELETE_SESSION: {
 			// Session deleted on server, now reset and create new one
 			session_id = "";
+			has_user_message = false;
 			coding_standards_injected = false;
 			_add_system_message("Previous session deleted. Creating new session...");
 			_create_session();
@@ -1016,6 +1421,8 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 					print_line("AIAssistant: Loaded saved model from config: " + saved_model);
 				}
 			}
+			// Restore status — config loading is done.
+			_update_status("Connected", Color(0, 1, 0));
 			// Always fetch available providers/models after config (even if config failed)
 			_fetch_providers();
 		} break;
@@ -1070,7 +1477,11 @@ void AIAssistantDock::_on_send_pressed() {
 		prompt = "[Image attachment(s)]";
 	}
 
+	user_scrolled_up = false; // Resume auto-scroll when user sends a message
 	_add_user_message(prompt);
+	suppress_scroll_tracking = true;
+	chat_scroll->set_v_scroll(INT32_MAX); // Force immediate scroll to show user's message
+	suppress_scroll_tracking = false;
 	_process_prompt(prompt);
 	prompt_input->set_text("");
 	_clear_attachments();
@@ -1091,6 +1502,11 @@ void AIAssistantDock::_on_stop_pressed() {
 	String url = service_url + "/session/" + session_id + "/abort?directory=" + _get_project_directory().uri_encode();
 	abort_request->request(url, _get_headers_with_directory(), HTTPClient::METHOD_POST, "{}");
 
+	// Remember the current assistant message so the next poll cycle skips it.
+	// Without this, the stale aborted message (which has time.completed set)
+	// would trick the poller into thinking the NEW response is already done.
+	ignore_assistant_message_id = current_message_id;
+
 	// Hide processing and stop polling
 	_hide_processing();
 	pending_request = REQUEST_NONE;
@@ -1098,52 +1514,29 @@ void AIAssistantDock::_on_stop_pressed() {
 	_add_system_message("AI processing stopped.");
 }
 
-void AIAssistantDock::_on_plan_mode_toggled(bool p_enabled) {
-	is_plan_mode = p_enabled;
-	if (p_enabled) {
-		_add_system_message("[Mode] Plan mode enabled - AI will create a plan before making changes.");
+void AIAssistantDock::_on_send_or_stop_pressed() {
+	if (is_processing) {
+		_on_stop_pressed();
 	} else {
-		_add_system_message("[Mode] Plan mode disabled.");
-	}
-}
-
-void AIAssistantDock::_on_auto_accept_toggled(bool p_enabled) {
-	is_auto_accept = p_enabled;
-	if (p_enabled) {
-		_add_system_message("[Mode] Auto-accept enabled - File edits will be automatically approved.");
-	} else {
-		_add_system_message("[Mode] Auto-accept disabled.");
+		_on_send_pressed();
 	}
 }
 
 void AIAssistantDock::_on_clear_pressed() {
-	// Clear UI immediately
-	while (chat_container->get_child_count() > 0) {
-		Node *child = chat_container->get_child(0);
-		chat_container->remove_child(child);
-		memdelete(child);
+	// If the current session has no user messages, delete it (no value in keeping it).
+	// Otherwise, leave it in session history for later access.
+	if (!has_user_message && !session_id.is_empty()) {
+		_fire_and_forget_delete_session(session_id);
 	}
-	chat_history.clear();
-	_clear_tool_tracking();
-	_clear_attachments();
-	user_message_indices.clear();
-	collapse_buttons.clear();
-	collapsed_turns.clear();
-	user_message_texts.clear();
-	sticky_header->set_visible(false);
-	sticky_current_turn_index = -1;
+
+	_clear_chat_ui();
 	_add_system_message("Chat cleared. Creating new session...");
 
-	// Delete the current session on the server (if it exists)
-	if (!session_id.is_empty()) {
-		pending_request = REQUEST_DELETE_SESSION;
-		String url = service_url + "/session/" + session_id;
-		http_request->request(url, _get_headers_with_directory(), HTTPClient::METHOD_DELETE);
-	} else {
-		// No session to delete, just reset and create new one
-		coding_standards_injected = false;
-		_create_session();
-	}
+	// Reset and create new session.
+	session_id = "";
+	has_user_message = false;
+	coding_standards_injected = false;
+	_create_session();
 }
 
 void AIAssistantDock::_on_settings_pressed() {
@@ -1158,6 +1551,16 @@ void AIAssistantDock::_on_settings_pressed() {
 	if (!saved_meshy.is_empty()) {
 		meshy_token_input->set_text(saved_meshy);
 	}
+
+	// Load project prompt (CLAUDE.md)
+	project_prompt_edit->set_text(_load_project_prompt());
+	String prompt_path = _get_project_directory().path_join("CLAUDE.md");
+	project_prompt_path_label->set_text("Path: " + prompt_path);
+
+	// Populate engine prompt file list
+	_populate_engine_prompt_tree();
+	engine_prompt_preview->set_text("Select an engine prompt file above to preview its contents.");
+
 	settings_dialog->popup_centered();
 }
 
@@ -1241,6 +1644,18 @@ void AIAssistantDock::_on_settings_save_pressed() {
 	if (any_saved) {
 		EditorSettings::get_singleton()->save();
 	}
+
+	// Save project prompt (CLAUDE.md)
+	String prompt_content = project_prompt_edit->get_text();
+	if (!prompt_content.is_empty()) {
+		_save_project_prompt(prompt_content);
+	} else {
+		// If content was cleared and file exists, save empty to clear it
+		String prompt_path = _get_project_directory().path_join("CLAUDE.md");
+		if (FileAccess::exists(prompt_path)) {
+			_save_project_prompt("");
+		}
+	}
 }
 
 void AIAssistantDock::_on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
@@ -1253,7 +1668,7 @@ void AIAssistantDock::_on_settings_request_completed(int p_result, int p_code, c
 	}
 	btn->set_disabled(false);
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	String response_text = _body_to_string(p_body);
 	print_line("[AI Settings] Test result for " + settings_testing_provider + ": http_result=" + itos(p_result) + " code=" + itos(p_code) + " body=" + response_text);
 
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
@@ -1321,6 +1736,138 @@ void AIAssistantDock::_auto_configure_providers() {
 	}
 }
 
+// ── Prompt Management ─────────────────────────────────────────────────────────
+
+String AIAssistantDock::_load_project_prompt() {
+	String prompt_path = _get_project_directory().path_join("CLAUDE.md");
+	Ref<FileAccess> f = FileAccess::open(prompt_path, FileAccess::READ);
+	if (f.is_valid()) {
+		return f->get_as_text();
+	}
+	return "";
+}
+
+void AIAssistantDock::_save_project_prompt(const String &p_content) {
+	String prompt_path = _get_project_directory().path_join("CLAUDE.md");
+	Ref<FileAccess> f = FileAccess::open(prompt_path, FileAccess::WRITE);
+	if (f.is_valid()) {
+		f->store_string(p_content);
+		_add_system_message("[System] Project prompt saved to CLAUDE.md");
+	} else {
+		_add_system_message("[System] Failed to save CLAUDE.md — check file permissions.");
+	}
+}
+
+String AIAssistantDock::_generate_project_prompt_template() {
+	String project_name = ProjectSettings::get_singleton()->get("application/config/name");
+	if (project_name.is_empty()) {
+		project_name = "My Game";
+	}
+
+	String project_dir = _get_project_directory();
+	String tmpl;
+
+	tmpl += "# " + project_name + " — AI Development Guide\n\n";
+	tmpl += "## Project Overview\n";
+	tmpl += "[Brief description of the game, genre, target platform]\n\n";
+
+	// Scan top-level directories
+	tmpl += "## Directory Structure\n";
+	Ref<DirAccess> dir = DirAccess::open(project_dir);
+	if (dir.is_valid()) {
+		dir->list_dir_begin();
+		Vector<String> dirs;
+		String entry = dir->get_next();
+		while (!entry.is_empty()) {
+			if (dir->current_is_dir() && entry != "." && entry != ".." && !entry.begins_with(".")) {
+				dirs.push_back(entry);
+			}
+			entry = dir->get_next();
+		}
+		dir->list_dir_end();
+		dirs.sort();
+
+		for (int i = 0; i < dirs.size(); i++) {
+			tmpl += "- res://" + dirs[i] + "/\n";
+		}
+	}
+	tmpl += "\n";
+
+	tmpl += "## Asset Paths\n";
+	tmpl += "[List key asset directories and what they contain]\n\n";
+
+	tmpl += "## Architecture\n";
+	tmpl += "[Key technical decisions — composition, data-driven, etc.]\n\n";
+
+	tmpl += "## Rules\n";
+	tmpl += "[Project-specific coding rules or constraints]\n";
+
+	return tmpl;
+}
+
+Vector<String> AIAssistantDock::_get_engine_prompt_files() {
+	Vector<String> result;
+
+	String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+	String docs_dir = exe_dir.path_join("..").path_join("..").path_join("docs").simplify_path();
+
+	Ref<DirAccess> dir = DirAccess::open(docs_dir);
+	if (dir.is_null()) {
+		return result;
+	}
+
+	dir->list_dir_begin();
+	String entry = dir->get_next();
+	while (!entry.is_empty()) {
+		if (!dir->current_is_dir() && entry.ends_with(".md")) {
+			result.push_back(docs_dir.path_join(entry));
+		}
+		entry = dir->get_next();
+	}
+	dir->list_dir_end();
+	result.sort();
+
+	return result;
+}
+
+void AIAssistantDock::_populate_engine_prompt_tree() {
+	engine_prompt_tree->clear();
+	TreeItem *root = engine_prompt_tree->create_item();
+
+	Vector<String> files = _get_engine_prompt_files();
+	for (int i = 0; i < files.size(); i++) {
+		TreeItem *item = engine_prompt_tree->create_item(root);
+		item->set_text(0, files[i].get_file());
+		item->set_metadata(0, files[i]); // Store full path in metadata
+	}
+}
+
+void AIAssistantDock::_on_engine_prompt_selected() {
+	TreeItem *selected = engine_prompt_tree->get_selected();
+	if (!selected) {
+		return;
+	}
+
+	String file_path = selected->get_metadata(0);
+	Ref<FileAccess> f = FileAccess::open(file_path, FileAccess::READ);
+	if (f.is_valid()) {
+		engine_prompt_preview->set_text(f->get_as_text());
+	} else {
+		engine_prompt_preview->set_text("Could not read file: " + file_path);
+	}
+}
+
+void AIAssistantDock::_on_generate_prompt_pressed() {
+	String tmpl = _generate_project_prompt_template();
+	String existing = project_prompt_edit->get_text().strip_edges();
+	if (!existing.is_empty()) {
+		// Append template below existing content
+		project_prompt_edit->set_text(existing + "\n\n" + tmpl);
+	} else {
+		project_prompt_edit->set_text(tmpl);
+	}
+}
+
 void AIAssistantDock::_on_providers_status_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	// Clean up the one-off request node
 	Node *sender = Object::cast_to<Node>(get_child(get_child_count() - 1));
@@ -1330,7 +1877,7 @@ void AIAssistantDock::_on_providers_status_completed(int p_result, int p_code, c
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	String response_text = _body_to_string(p_body);
 	JSON json;
 	Error err = json.parse(response_text);
 
@@ -1360,51 +1907,6 @@ void AIAssistantDock::_on_providers_status_completed(int p_result, int p_code, c
 	_add_ai_message(msg);
 }
 
-void AIAssistantDock::_on_reconnect_pressed() {
-	if (connection_status == CONNECTED) {
-		// Stop log polling
-		if (logs_poll_timer) {
-			logs_poll_timer->stop();
-		}
-		// Stop command polling
-		if (command_poll_timer) {
-			command_poll_timer->stop();
-		}
-		// Stop question polling
-		if (question_poll_timer) {
-			question_poll_timer->stop();
-		}
-		// Hide any pending question dialog
-		_hide_question_dialog();
-		// Disconnect
-		session_id = "";
-		coding_standards_injected = false;
-		connection_status = DISCONNECTED;
-		_update_status("Disconnected", Color(0.5, 0.5, 0.5));
-		_update_connection_indicator();
-		reconnect_button->set_text("Connect");
-		_add_system_message("Disconnected from AI service.");
-	} else {
-		// Connect
-		_add_system_message("Connecting to " + service_url + "...");
-		_check_service_health();
-	}
-}
-
-void AIAssistantDock::_on_template_selected(int p_id) {
-	String templates[] = { "platformer_2d", "tower_defense", "rpg_topdown", "shooter_topdown" };
-
-	if (p_id < 4) {
-		_add_system_message("Loading template: " + templates[p_id]);
-		// TODO: Implement template loading via AI
-		if (connection_status == CONNECTED) {
-			_send_message("Create a " + templates[p_id] + " game template");
-		}
-	} else if (p_id == 99) {
-		_add_system_message("Starting with empty project");
-	}
-}
-
 void AIAssistantDock::_on_prompt_text_changed() {
 	String text = prompt_input->get_text().strip_edges();
 
@@ -1424,13 +1926,20 @@ void AIAssistantDock::_on_prompt_text_changed() {
 			String fill_text;
 			String description;
 		};
-		CommandDef commands[] = {
-			{ "/connect replicate <token>", "/connect replicate ", "Configure Replicate API" },
-			{ "/providers", "/providers", "List configured providers" },
-			{ "/disconnect replicate", "/disconnect replicate", "Remove Replicate provider" },
-		};
 
-		for (int i = 0; i < 3; i++) {
+		// Build dynamic command list: static commands + loaded skills
+		Vector<CommandDef> commands;
+		commands.push_back({ "/connect replicate <token>", "/connect replicate ", "Configure Replicate API" });
+		commands.push_back({ "/providers", "/providers", "List configured providers" });
+		commands.push_back({ "/disconnect replicate", "/disconnect replicate", "Remove Replicate provider" });
+
+		// Add loaded skills as slash commands
+		for (int i = 0; i < available_skills.size(); i++) {
+			String cmd_name = "/" + available_skills[i].name;
+			commands.push_back({ cmd_name, cmd_name, available_skills[i].description.substr(0, 80) });
+		}
+
+		for (int i = 0; i < commands.size(); i++) {
 			const CommandDef &cmd = commands[i];
 			if (cmd.command.to_lower().begins_with(filter) || filter == "/") {
 				Button *btn = memnew(Button);
@@ -1440,8 +1949,7 @@ void AIAssistantDock::_on_prompt_text_changed() {
 				btn->set_flat(true);
 				btn->set_focus_mode(Control::FOCUS_NONE); // Don't steal focus from input
 
-				int cmd_index = i;
-				btn->connect("pressed", callable_mp(this, &AIAssistantDock::_on_slash_hint_pressed).bind(cmd_index));
+				btn->connect("pressed", Callable(this, "_on_slash_hint_pressed").bind(i));
 
 				slash_hint_container->add_child(btn);
 				slash_hint_buttons.push_back(btn);
@@ -1459,15 +1967,18 @@ void AIAssistantDock::_on_prompt_text_changed() {
 }
 
 void AIAssistantDock::_on_slash_hint_pressed(int p_id) {
-	String commands[] = {
-		"/connect replicate ",
-		"/providers",
-		"/disconnect replicate",
-	};
+	// Build the same command list as _on_prompt_text_changed
+	Vector<String> fill_texts;
+	fill_texts.push_back("/connect replicate ");
+	fill_texts.push_back("/providers");
+	fill_texts.push_back("/disconnect replicate");
+	for (int i = 0; i < available_skills.size(); i++) {
+		fill_texts.push_back("/" + available_skills[i].name);
+	}
 
-	if (p_id >= 0 && p_id < 3) {
-		prompt_input->set_text(commands[p_id]);
-		prompt_input->set_caret_column(commands[p_id].length());
+	if (p_id >= 0 && p_id < fill_texts.size()) {
+		prompt_input->set_text(fill_texts[p_id]);
+		prompt_input->set_caret_column(fill_texts[p_id].length());
 		prompt_input->set_caret_line(0);
 		prompt_input->grab_focus();
 	}
@@ -1616,23 +2127,51 @@ bool AIAssistantDock::_add_attachment_from_file(const String &p_path) {
 	}
 
 	Error err;
-	Vector<uint8_t> data = FileAccess::get_file_as_bytes(p_path, &err);
-	if (err != OK || data.is_empty()) {
+	Vector<uint8_t> file_data = FileAccess::get_file_as_bytes(p_path, &err);
+	if (err != OK || file_data.is_empty()) {
 		_add_system_message("Failed to read image file: " + p_path);
 		return false;
 	}
 
-	if (data.size() > MAX_IMAGE_SIZE_BYTES) {
-		float size_mb = data.size() / (1024.0f * 1024.0f);
-		_add_system_message(vformat("Image too large (%.1f MB). Maximum size is 10 MB: %s", size_mb, p_path.get_file()));
+	// Load image (needed for thumbnail and potential downscaling)
+	Ref<Image> img = Image::load_from_file(p_path);
+	if (img.is_null() || img->is_empty()) {
+		_add_system_message("Failed to load image: " + p_path.get_file());
 		return false;
 	}
 
-	// Load image for thumbnail
-	Ref<Image> img = Image::load_from_file(p_path);
-	if (img.is_null() || img->is_empty()) {
-		_add_system_message("Failed to load image for preview: " + p_path.get_file());
-		return false;
+	String mime_type = _get_mime_type_for_extension(ext);
+
+	// Auto-downscale if image data exceeds the API size limit
+	if (file_data.size() > MAX_IMAGE_SIZE_BYTES) {
+		float original_mb = file_data.size() / (1024.0f * 1024.0f);
+		Ref<Image> scaled = img->duplicate();
+
+		// Try progressively smaller scales until it fits
+		for (float scale = 0.75f; scale >= 0.1f; scale -= 0.1f) {
+			int new_w = MAX(1, (int)(img->get_width() * scale));
+			int new_h = MAX(1, (int)(img->get_height() * scale));
+			scaled = img->duplicate();
+			scaled->resize(new_w, new_h, Image::INTERPOLATE_LANCZOS);
+
+			// Encode as JPEG for better compression (screenshots/photos)
+			file_data = scaled->save_jpg_to_buffer(0.85f);
+			if (file_data.size() <= MAX_IMAGE_SIZE_BYTES) {
+				break;
+			}
+		}
+
+		if (file_data.size() > MAX_IMAGE_SIZE_BYTES) {
+			_add_message("Error", vformat("Could not compress image below limit: %s", p_path.get_file()), Color(1.0, 0.4, 0.4));
+			return false;
+		}
+
+		mime_type = "image/jpeg";
+		float new_mb = file_data.size() / (1024.0f * 1024.0f);
+		_add_log_entry("INFO", vformat("Image resized: %.1f MB -> %.1f MB (%dx%d): %s",
+				original_mb, new_mb, img->get_width(), img->get_height(), p_path.get_file()),
+				Color(0.8, 0.8, 0.5));
+		img = scaled;
 	}
 
 	// Create thumbnail preserving aspect ratio
@@ -1651,8 +2190,8 @@ bool AIAssistantDock::_add_attachment_from_file(const String &p_path) {
 	AttachmentInfo att;
 	att.file_path = p_path;
 	att.filename = p_path.get_file();
-	att.mime_type = _get_mime_type_for_extension(ext);
-	att.data = data;
+	att.mime_type = mime_type;
+	att.data = file_data;
 	att.thumbnail = ImageTexture::create_from_image(thumb);
 	pending_attachments.push_back(att);
 
@@ -1671,17 +2210,45 @@ bool AIAssistantDock::_add_attachment_from_clipboard_image() {
 		return false;
 	}
 
+	String mime_type = "image/png";
+	Vector<uint8_t> send_data = png_data;
+	Ref<Image> send_image = clipboard_image;
+
+	// Auto-downscale if clipboard image exceeds the API size limit
 	if (png_data.size() > MAX_IMAGE_SIZE_BYTES) {
-		float size_mb = png_data.size() / (1024.0f * 1024.0f);
-		_add_system_message(vformat("Clipboard image too large (%.1f MB). Maximum size is 10 MB.", size_mb));
-		return false;
+		float original_mb = png_data.size() / (1024.0f * 1024.0f);
+
+		// Try progressively smaller scales, encode as JPEG for compression
+		for (float scale = 0.75f; scale >= 0.1f; scale -= 0.1f) {
+			int new_w = MAX(1, (int)(clipboard_image->get_width() * scale));
+			int new_h = MAX(1, (int)(clipboard_image->get_height() * scale));
+			Ref<Image> scaled = clipboard_image->duplicate();
+			scaled->resize(new_w, new_h, Image::INTERPOLATE_LANCZOS);
+
+			send_data = scaled->save_jpg_to_buffer(0.85f);
+			if (send_data.size() <= MAX_IMAGE_SIZE_BYTES) {
+				send_image = scaled;
+				break;
+			}
+		}
+
+		if (send_data.size() > MAX_IMAGE_SIZE_BYTES) {
+			_add_message("Error", "Could not compress clipboard image below limit.", Color(1.0, 0.4, 0.4));
+			return false;
+		}
+
+		mime_type = "image/jpeg";
+		float new_mb = send_data.size() / (1024.0f * 1024.0f);
+		_add_log_entry("INFO", vformat("Clipboard image resized: %.1f MB -> %.1f MB (%dx%d)",
+				original_mb, new_mb, send_image->get_width(), send_image->get_height()),
+				Color(0.8, 0.8, 0.5));
 	}
 
 	String timestamp = Time::get_singleton()->get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "_");
-	String filename = "clipboard_" + timestamp + ".png";
+	String filename = "clipboard_" + timestamp + (mime_type == "image/jpeg" ? ".jpg" : ".png");
 
 	// Create thumbnail
-	Ref<Image> thumb = clipboard_image->duplicate();
+	Ref<Image> thumb = send_image->duplicate();
 	int tw = thumb->get_width();
 	int th = thumb->get_height();
 	if (tw > th) {
@@ -1696,8 +2263,8 @@ bool AIAssistantDock::_add_attachment_from_clipboard_image() {
 	AttachmentInfo att;
 	att.file_path = "";
 	att.filename = filename;
-	att.mime_type = "image/png";
-	att.data = png_data;
+	att.mime_type = mime_type;
+	att.data = send_data;
 	att.thumbnail = ImageTexture::create_from_image(thumb);
 	pending_attachments.push_back(att);
 
@@ -1718,7 +2285,7 @@ void AIAssistantDock::_rebuild_attachment_previews() {
 	while (attachment_preview_container->get_child_count() > 0) {
 		Node *child = attachment_preview_container->get_child(0);
 		attachment_preview_container->remove_child(child);
-		memdelete(child);
+		child->queue_free();
 	}
 
 	if (pending_attachments.is_empty()) {
@@ -1747,7 +2314,7 @@ void AIAssistantDock::_rebuild_attachment_previews() {
 		remove_btn->set_tooltip_text("Remove " + att.filename);
 		remove_btn->set_custom_minimum_size(Size2(0, 18));
 		remove_btn->add_theme_font_size_override("font_size", 10);
-		remove_btn->connect("pressed", callable_mp(this, &AIAssistantDock::_on_remove_attachment).bind(i));
+		remove_btn->connect("pressed", Callable(this, "_on_remove_attachment").bind(i), CONNECT_DEFERRED);
 		item->add_child(remove_btn);
 
 		attachment_preview_container->add_child(item);
@@ -1815,14 +2382,51 @@ void AIAssistantDock::_process_slash_command(const String &p_command) {
 		// Use a one-off request to fetch and display
 		HTTPRequest *status_request = memnew(HTTPRequest);
 		add_child(status_request);
-		status_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_providers_status_completed));
+		status_request->connect("request_completed", Callable(this, "_on_providers_status_completed"));
 		status_request->request(url, headers);
 	} else {
-		// Unknown slash command - pass through to AI
-		if (connection_status == CONNECTED && !session_id.is_empty()) {
-			_send_message(p_command);
-		} else {
-			_add_ai_message("Unknown command: " + p_command + "\n\nAvailable commands:\n- `/connect replicate <token>` - Configure Replicate\n- `/providers` - List configured providers\n- `/disconnect replicate` - Remove provider");
+		// Check if it matches a loaded skill
+		String cmd_name = lower.get_slice(" ", 0); // e.g. "/create-game"
+		// Get args from original (case-preserved) command
+		String original_stripped = p_command.strip_edges();
+		String args = original_stripped.length() > cmd_name.length() ? original_stripped.substr(cmd_name.length()).strip_edges() : "";
+		bool found_skill = false;
+
+		for (int i = 0; i < available_skills.size(); i++) {
+			if (cmd_name == "/" + available_skills[i].name) {
+				found_skill = true;
+				if (connection_status != CONNECTED || session_id.is_empty()) {
+					_add_ai_message("Not connected to AI service. Connect first to use /" + available_skills[i].name);
+					break;
+				}
+				// Send the skill content + any user args as a single message.
+				// Note: _on_send_pressed already displayed the user message in chat.
+				// Wrap skill content in instruction tags so the LLM follows the
+				// instructions rather than echoing the raw markdown back.
+				String user_request = !args.is_empty() ? args : "Start the " + available_skills[i].name + " workflow.";
+				String skill_prompt = "<skill-instructions name=\"" + available_skills[i].name + "\">\n"
+						+ "You MUST follow these instructions. Do NOT repeat or echo them.\n"
+						+ "Do NOT output the skill content as your response.\n"
+						+ "Instead, execute the workflow described below step by step.\n\n"
+						+ available_skills[i].content
+						+ "\n</skill-instructions>\n\n"
+						+ user_request;
+				_send_message(skill_prompt);
+				break;
+			}
+		}
+
+		if (!found_skill) {
+			// Unknown slash command - pass through to AI
+			if (connection_status == CONNECTED && !session_id.is_empty()) {
+				_send_message(p_command);
+			} else {
+				String skill_list;
+				for (int i = 0; i < available_skills.size(); i++) {
+					skill_list += "\n- `/" + available_skills[i].name + "` - " + available_skills[i].description.substr(0, 60);
+				}
+				_add_ai_message("Unknown command: " + p_command + "\n\nAvailable commands:\n- `/connect replicate <token>` - Configure Replicate\n- `/providers` - List configured providers\n- `/disconnect replicate` - Remove provider" + skill_list);
+			}
 		}
 	}
 }
@@ -1909,9 +2513,25 @@ void AIAssistantDock::_add_message(const String &p_sender, const String &p_text,
 }
 
 void AIAssistantDock::_scroll_chat_to_bottom() {
-	if (chat_auto_scroll && chat_auto_scroll->is_pressed()) {
-		chat_scroll->set_v_scroll(INT32_MAX);
+	if (!user_scrolled_up) {
+		// Defer the scroll to the next frame so the ScrollContainer's scrollbar
+		// range is fully updated after layout. Without this, set_v_scroll uses
+		// the stale max value and doesn't scroll far enough.
+		callable_mp(this, &AIAssistantDock::_do_scroll_to_bottom).call_deferred();
 	}
+}
+
+void AIAssistantDock::_do_scroll_to_bottom() {
+	if (!user_scrolled_up && chat_scroll) {
+		suppress_scroll_tracking = true;
+		chat_scroll->set_v_scroll(chat_scroll->get_v_scroll_bar()->get_max());
+		// Defer clearing the flag so it survives the value_changed signal
+		callable_mp(this, &AIAssistantDock::_clear_scroll_suppress).call_deferred();
+	}
+}
+
+void AIAssistantDock::_clear_scroll_suppress() {
+	suppress_scroll_tracking = false;
 }
 
 void AIAssistantDock::_toggle_turn_collapse(int p_user_msg_index) {
@@ -1952,6 +2572,16 @@ void AIAssistantDock::_toggle_turn_collapse(int p_user_msg_index) {
 }
 
 void AIAssistantDock::_on_chat_scroll_changed(double p_value) {
+	// Track whether user has scrolled away from the bottom.
+	// If within 30px of the max scroll, consider it "at bottom".
+	// Skip updating during programmatic scrolls (suppress_scroll_tracking).
+	if (!suppress_scroll_tracking) {
+		VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
+		if (vbar) {
+			double max_scroll = vbar->get_max() - vbar->get_page();
+			user_scrolled_up = (p_value < max_scroll - 30.0);
+		}
+	}
 	_update_sticky_header();
 }
 
@@ -2025,7 +2655,7 @@ void AIAssistantDock::_update_sticky_header() {
 		sticky_collapse_btn->set_text(is_collapsed ? U"\u25B6" : U"\u25BC");
 
 		// Connect to toggle for this turn
-		sticky_collapse_btn->connect("pressed", callable_mp(this, &AIAssistantDock::_toggle_turn_collapse).bind(found_index));
+		sticky_collapse_btn->connect("pressed", Callable(this, "_toggle_turn_collapse").bind(found_index));
 	}
 
 	sticky_header->set_visible(true);
@@ -2084,7 +2714,7 @@ void AIAssistantDock::_add_user_message(const String &p_text) {
 	collapse_buttons[child_idx] = collapse_btn;
 	collapsed_turns[child_idx] = false;
 	user_message_texts[child_idx] = formatted_text;
-	collapse_btn->connect("pressed", callable_mp(this, &AIAssistantDock::_toggle_turn_collapse).bind(child_idx));
+	collapse_btn->connect("pressed", Callable(this, "_toggle_turn_collapse").bind(child_idx));
 }
 
 void AIAssistantDock::_add_ai_message(const String &p_text) {
@@ -2092,10 +2722,44 @@ void AIAssistantDock::_add_ai_message(const String &p_text) {
 }
 
 void AIAssistantDock::_add_system_message(const String &p_text) {
-	_add_message("System", p_text, Color(1.0, 1.0, 0.6));
+	// System messages go to the Logs tab only (not shown in chat).
+	_add_log_entry("SYSTEM", p_text, Color(1.0, 1.0, 0.6));
+}
+
+void AIAssistantDock::_show_welcome_message() {
+	RichTextLabel *welcome = memnew(RichTextLabel);
+	welcome->set_use_bbcode(true);
+	welcome->set_fit_content(true);
+	welcome->set_selection_enabled(true);
+
+	String msg = "[color=gray]Welcome to Makabaka AI![/color]\n\n";
+	msg += "[color=cyan]Start creating:[/color]\n";
+	msg += "- \"Create a 2D platformer\" — guided game creation\n";
+	msg += "- /create-game — step-by-step workflow\n";
+	msg += "- /worldbuilding — build your game world\n\n";
+	msg += "[color=cyan]Quick help:[/color]\n";
+	msg += "- \"Add a player character\"\n";
+	msg += "- \"Fix the enemy AI\"\n";
+	msg += "- \"Make the UI look better\"";
+
+	welcome->set_text(msg);
+	chat_container->add_child(welcome);
 }
 
 void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p_tool_name, const String &p_status, const Dictionary &p_details) {
+	// Update dock title with current tool activity
+	if (is_processing) {
+		if (p_status == "running") {
+			current_tool_name = p_tool_name;
+			_update_dock_title();
+		} else if (p_status == "completed" || p_status == "error") {
+			if (current_tool_name == p_tool_name) {
+				current_tool_name = "";
+				_update_dock_title();
+			}
+		}
+	}
+
 	// Track start time for new tools
 	if (!tool_start_times.has(p_part_id)) {
 		tool_start_times[p_part_id] = Time::get_singleton()->get_ticks_msec();
@@ -2279,7 +2943,9 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 		status_icon = String::utf8("\u2713"); // checkmark
 		status_color = "66ff66";
 	} else if (p_status == "running" || p_status == "pending") {
-		status_icon = "...";
+		// Show live progress title from ctx.metadata() if available
+		String live_title = p_details.get("title", "");
+		status_icon = live_title.is_empty() ? "..." : live_title;
 		status_color = "ffff66";
 	} else if (p_status == "error") {
 		status_icon = String::utf8("\u2717"); // X mark
@@ -2305,11 +2971,43 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 	// Status + time
 	formatted += "  [color=#" + status_color + "]" + status_icon + "[/color] [color=#888888](" + time_str + ")[/color]";
 
+	// --- TodoWrite: render checklist inline ---
+	if (p_tool_name == "todowrite" && in.has("todos")) {
+		Variant todos_var = in["todos"];
+		if (todos_var.get_type() == Variant::ARRAY) {
+			Array todos = todos_var;
+			for (int ti = 0; ti < todos.size(); ti++) {
+				Dictionary todo = todos[ti];
+				String todo_status = todo.get("status", "");
+				String todo_content = todo.get("content", "");
+				String todo_active = todo.get("activeForm", todo_content);
+
+				String icon;
+				String color;
+				String label;
+				if (todo_status == "completed") {
+					icon = String::utf8("\u2713"); // checkmark
+					color = "66ff66";
+					label = todo_content;
+				} else if (todo_status == "in_progress") {
+					icon = String::utf8("\u25B6"); // play triangle
+					color = "ffcc44";
+					label = todo_active;
+				} else {
+					icon = String::utf8("\u25CB"); // circle
+					color = "888888";
+					label = todo_content;
+				}
+				formatted += "\n  [color=#" + color + "]" + icon + "[/color] " + label;
+			}
+		}
+	}
+
 	// --- Task tool: subagent tools (same 2-line format, indented with │) ---
 	if (p_tool_name == "task" && p_details.has("metadata")) {
-		Dictionary metadata = p_details["metadata"];
-		if (metadata.has("summary")) {
-			Array summary = metadata["summary"];
+		Dictionary task_metadata = p_details["metadata"];
+		if (task_metadata.has("summary")) {
+			Array summary = task_metadata["summary"];
 			for (int i = 0; i < summary.size(); i++) {
 				Dictionary tool_info = summary[i];
 				String sub_tool = tool_info.get("tool", "?");
@@ -2407,7 +3105,7 @@ void AIAssistantDock::_add_tool_message(const String &p_part_id, const String &p
 	tool_label->set_selection_enabled(true);
 	tool_label->set_context_menu_enabled(true);
 	tool_label->set_focus_mode(Control::FOCUS_CLICK);
-	tool_label->connect("meta_clicked", callable_mp(this, &AIAssistantDock::_on_tool_meta_clicked));
+	tool_label->connect("meta_clicked", Callable(this, "_on_tool_meta_clicked"));
 	container->add_child(tool_label);
 
 	container->add_child(memnew(HSeparator));
@@ -2446,6 +3144,17 @@ String AIAssistantDock::_format_tool_display_name(const String &p_tool_name) con
 
 void AIAssistantDock::_on_tool_meta_clicked(const Variant &p_meta) {
 	String meta = p_meta;
+
+	// Handle compaction summary view link
+	if (meta == "compaction://view") {
+		if (!compaction_summary_text.is_empty()) {
+			tool_detail_dialog->set_title("Context Summary");
+			tool_detail_content->set_text(compaction_summary_text);
+			tool_detail_dialog->popup_centered_ratio(0.6);
+		}
+		return;
+	}
+
 	if (!meta.begins_with("tool://")) {
 		return;
 	}
@@ -2473,13 +3182,32 @@ void AIAssistantDock::_on_tool_meta_clicked(const Variant &p_meta) {
 }
 
 void AIAssistantDock::_update_status(const String &p_text, const Color &p_color) {
-	if (status_label) {
-		status_label->set_text(p_text);
-		status_label->add_theme_color_override("font_color", p_color);
+	// Status is logged but not shown in UI (connection indicator dot is sufficient).
+	_add_log_entry("STATUS", p_text, p_color);
+}
+
+void AIAssistantDock::_update_dock_title() {
+	if (!is_processing) {
+		// Idle: clear color (transparent = default)
+		set_title_color(Color(0, 0, 0, 0));
+		return;
+	}
+
+	// Pulse alpha between 0.5 and 1.0 using processing_dots as phase
+	float alpha = 0.6f + 0.4f * Math::sin(processing_dots * Math::PI * 0.5f);
+
+	if (!current_tool_name.is_empty()) {
+		// Tool running: orange
+		set_title_color(Color(1.0, 0.7, 0.2, alpha));
+	} else {
+		// Thinking: blue
+		set_title_color(Color(0.4, 0.7, 1.0, alpha));
 	}
 }
 
 void AIAssistantDock::_show_processing() {
+	is_processing = true;
+	current_tool_name = "";
 	if (processing_label) {
 		processing_label->set_visible(true);
 		processing_dots = 0;
@@ -2487,27 +3215,29 @@ void AIAssistantDock::_show_processing() {
 		processing_timer->start();
 	}
 	if (send_button) {
-		send_button->set_disabled(true);
+		send_button->set_text("Stop");
+		send_button->set_disabled(false);
+		send_button->add_theme_color_override("font_color", Color(1.0, 0.4, 0.4));
 	}
-	if (stop_button) {
-		stop_button->set_visible(true);
-	}
+	_update_dock_title();
 }
 
 void AIAssistantDock::_hide_processing() {
+	is_processing = false;
+	current_tool_name = "";
 	if (processing_label) {
 		processing_label->set_visible(false);
 		processing_timer->stop();
 		processing_dots = 0;
 	}
 	if (send_button) {
+		send_button->set_text("Send (Enter)");
 		send_button->set_disabled(false);
-	}
-	if (stop_button) {
-		stop_button->set_visible(false);
+		send_button->remove_theme_color_override("font_color");
 	}
 	// Stop stream polling when processing is done
 	_stop_stream_polling();
+	_update_dock_title();
 }
 
 void AIAssistantDock::_on_processing_timer_timeout() {
@@ -2517,6 +3247,7 @@ void AIAssistantDock::_on_processing_timer_timeout() {
 		dots += ".";
 	}
 	processing_label->set_text("AI is thinking" + dots);
+	_update_dock_title();
 }
 
 // === Stream Polling (for intermediate AI steps) ===
@@ -2525,6 +3256,7 @@ void AIAssistantDock::_start_stream_polling(const String &p_message_id) {
 	// p_message_id can be empty - we poll messages list to find the latest assistant message
 	current_message_id = p_message_id;
 	last_part_count = 0;
+	stream_empty_poll_count = 0;
 	// Clear tool tracking for new message stream
 	_clear_tool_tracking();
 	if (stream_poll_timer) {
@@ -2567,7 +3299,7 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	String response_text = _body_to_string(p_body);
 	JSON json;
 	Error err = json.parse(response_text);
 
@@ -2582,7 +3314,10 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 
 	Array messages = stream_data;
 
-	// Find the latest assistant message
+	// Find the latest assistant message, skipping any aborted/stale message.
+	// After stop, the old assistant message (with time.completed set) can trick us
+	// into thinking the new response is already done.  We skip it by ID or by
+	// checking for an AbortedError.
 	Dictionary latest_assistant;
 	for (int i = messages.size() - 1; i >= 0; i--) {
 		Dictionary msg = messages[i];
@@ -2590,19 +3325,79 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 			Dictionary info = msg["info"];
 			String role = info.get("role", "");
 			if (role == "assistant") {
+				String msg_id = info.get("id", "");
+
+				// Skip explicitly ignored message (set by _on_stop_pressed)
+				if (!ignore_assistant_message_id.is_empty() && msg_id == ignore_assistant_message_id) {
+					continue;
+				}
+
+				// Skip completed compaction summary — we already displayed the compact indicator
+				// and are now waiting for the real response.
+				if (!compaction_summary_message_id.is_empty() && msg_id == compaction_summary_message_id) {
+					continue;
+				}
+
+				// After compaction, skip any assistant messages OLDER than the compaction summary.
+				// Without this, the poller can pick up the old pre-compaction assistant message
+				// (which is already completed) and incorrectly stop polling before the new
+				// post-compaction response arrives.
+				if (!compaction_summary_message_id.is_empty() && msg_id < compaction_summary_message_id) {
+					continue;
+				}
+
+				// Also skip any completed message that has an AbortedError — it was
+				// cancelled and should not be treated as a valid response.
+				if (info.has("error")) {
+					Dictionary err = info["error"];
+					String err_name = err.get("name", "");
+					if (err_name == "MessageAbortedError") {
+						// Remember this ID so we keep skipping it on future polls
+						ignore_assistant_message_id = msg_id;
+						continue;
+					}
+				}
+
 				latest_assistant = msg;
 				break;
 			}
 		}
 	}
 
+	// Found a new assistant message — clear the ignore/skip filters
+	if (!latest_assistant.is_empty()) {
+		if (!ignore_assistant_message_id.is_empty()) {
+			ignore_assistant_message_id = "";
+		}
+		if (!compaction_summary_message_id.is_empty()) {
+			compaction_summary_message_id = "";
+		}
+	}
+
 	if (latest_assistant.is_empty() || !latest_assistant.has("parts")) {
+		// No assistant message found — session may be stale (e.g. server restarted).
+		// After ~30s of empty polls (60 × 500ms), recover by resetting state.
+		stream_empty_poll_count++;
+		if (stream_empty_poll_count > 60) {
+			print_line("[AIAssistant] Stale session detected — no assistant response after 30s of polling. Recovering...");
+			_stop_stream_polling();
+			_hide_processing();
+			pending_request = REQUEST_NONE;
+			_add_system_message("Session timed out (server may have restarted). Please send your message again.");
+			_update_status("Connected", Color(0, 1, 0));
+			// Create a fresh session so the next message works
+			_create_session();
+		}
 		return;
 	}
+
+	// Got an assistant message — reset empty poll counter
+	stream_empty_poll_count = 0;
 
 	// Track message ID to detect if it changed
 	Dictionary info = latest_assistant["info"];
 	String msg_id = info.get("id", "");
+	bool is_compaction_summary = info.get("summary", false);
 	if (msg_id != current_message_id) {
 		// New message, reset part count
 		current_message_id = msg_id;
@@ -2644,7 +3439,8 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 			if (!prev_status || *prev_status != status) {
 				// Rescan filesystem when file-modifying tools complete
 				if (status == "completed" && (!prev_status || *prev_status != "completed")) {
-					if (tool_name == "write" || tool_name == "edit" || tool_name == "bash" || tool_name == "create_file") {
+					if (tool_name == "write" || tool_name == "edit" || tool_name == "bash" || tool_name == "create_file" ||
+							tool_name.begins_with("godot_")) {
 						EditorFileSystem::get_singleton()->scan_changes();
 					}
 				}
@@ -2685,6 +3481,13 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 				continue;
 			}
 
+			// Compaction summaries: store text but don't render in chat
+			if (is_compaction_summary) {
+				compaction_summary_text = text;
+				compaction_summary_message_id = msg_id;
+				continue;
+			}
+
 			String text_key = part_id + "_text_stream";
 			if (text_stream_labels.has(text_key)) {
 				// Update existing streaming text label
@@ -2692,6 +3495,9 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 				if (text_label) {
 					String formatted = "[color=#66ff99][b]AI:[/b][/color] " + text;
 					text_label->set_text(formatted);
+					// Trigger relayout so ScrollContainer picks up the new height.
+					text_label->update_minimum_size();
+					_scroll_chat_to_bottom();
 				}
 			} else {
 				// Create a new streaming text label
@@ -2723,6 +3529,40 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 	// Check if message is complete (time.completed exists in the info)
 	Dictionary time_info = info.get("time", Dictionary());
 	if (time_info.has("completed")) {
+		// Compaction summary completed — show compact indicator and keep polling for the real response
+		if (is_compaction_summary) {
+			// Store the final summary text
+			for (int i = 0; i < parts.size(); i++) {
+				Dictionary part = parts[i];
+				if (String(part.get("type", "")) == "text") {
+					String text = String(part.get("text", "")).strip_edges();
+					if (!text.is_empty()) {
+						compaction_summary_text = text;
+					}
+				}
+			}
+
+			// Show compact clickable indicator in chat
+			VBoxContainer *msg_container = memnew(VBoxContainer);
+			RichTextLabel *label = memnew(RichTextLabel);
+			label->set_use_bbcode(true);
+			label->set_fit_content(true);
+			label->set_text("[color=#aaaaaa][i]Context compacted[/i][/color]  [url=compaction://view][color=#6699cc]View summary[/color][/url]");
+			label->set_selection_enabled(true);
+			label->connect("meta_clicked", Callable(this, "_on_tool_meta_clicked"));
+			msg_container->add_child(label);
+			msg_container->add_child(memnew(HSeparator));
+			chat_container->add_child(msg_container);
+
+			_add_log_entry("INFO", "Context compacted — continuing with fresh context", Color(0.8, 0.8, 0.5));
+
+			// Don't stop polling — the server will produce a real response next.
+			// Reset message tracking so we pick up the next assistant message.
+			current_message_id = "";
+			last_part_count = 0;
+			return;
+		}
+
 		// Message is complete! Show final text and update all tool parts with their final state
 		for (int i = 0; i < parts.size(); i++) {
 			Dictionary part = parts[i];
@@ -2759,19 +3599,20 @@ void AIAssistantDock::_on_stream_http_request_completed(int p_result, int p_code
 			}
 		}
 
-		// Check for errors
+		// Check for errors — show in chat so user can see them
 		if (info.has("error")) {
 			Dictionary error = info["error"];
 			String error_name = error.get("name", "unknown");
 			// The actual message is nested in error.data.message
 			String error_msg;
 			if (error.has("data") && Dictionary(error["data"]).has("message")) {
-				Dictionary data = error["data"];
-				error_msg = String(data["message"]);
+				Dictionary error_data = error["data"];
+				error_msg = String(error_data["message"]);
 			} else {
 				error_msg = error.get("message", "An error occurred");
 			}
-			_add_system_message("Error (" + error_name + "): " + error_msg);
+			// Show error in chat (red) so user sees it, not just in logs
+			_add_message("Error", error_name + ": " + error_msg, Color(1.0, 0.4, 0.4));
 			_add_log_entry("ERROR", error_name + ": " + error_msg, Color(1.0, 0.4, 0.4));
 		}
 
@@ -2953,7 +3794,7 @@ void AIAssistantDock::_on_logs_http_request_completed(int p_result, int p_code, 
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	String response_text = _body_to_string(p_body);
 	JSON json;
 	Error err = json.parse(response_text);
 
@@ -3046,7 +3887,7 @@ void AIAssistantDock::_on_command_http_request_completed(int p_result, int p_cod
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	String response_text = _body_to_string(p_body);
 	JSON json;
 	Error err = json.parse(response_text);
 
@@ -3095,7 +3936,217 @@ void AIAssistantDock::_execute_godot_command(const String &p_action, const Dicti
 		}
 		// Report status to OpenCode
 		_report_game_status(false);
+	} else if (p_action == "scan_filesystem") {
+		// Refresh the FileSystem dock to detect new/modified files
+		EditorInterface::get_singleton()->get_resource_filesystem()->scan();
+		_add_system_message("[Editor] File system scan triggered.");
+	} else if (p_action == "reload_scene") {
+		// Reload the currently open scene to pick up external changes
+		Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+		if (root && !root->get_scene_file_path().is_empty()) {
+			EditorInterface::get_singleton()->reload_scene_from_path(root->get_scene_file_path());
+			_add_system_message("[Editor] Current scene reloaded.");
+		} else {
+			_add_system_message("[Editor] No scene open to reload.");
+		}
+	} else if (p_action == "screenshot") {
+		// Request screenshot from the running game via debugger protocol
+		String screenshot_id = p_params.get("id", "");
+		if (screenshot_id.is_empty()) {
+			return;
+		}
+
+		if (!EditorRunBar::get_singleton()->is_playing()) {
+			_add_system_message("[Screenshot] No game running — start the game first.");
+			_post_screenshot_result(screenshot_id, "");
+			return;
+		}
+
+		bool ok = EditorRunBar::get_singleton()->request_screenshot(
+				callable_mp_static(&AIAssistantDock::_screenshot_for_tool_static).bind(screenshot_id));
+
+		if (!ok) {
+			_add_system_message("[Screenshot] Could not request screenshot — game may not be embedded.");
+			_post_screenshot_result(screenshot_id, "");
+		}
+	} else if (p_action == "eval") {
+		// Evaluate a GDScript expression in the running game via debug protocol
+		String eval_id = p_params.get("id", "");
+		String expression = p_params.get("expression", "");
+		if (eval_id.is_empty() || expression.is_empty()) {
+			return;
+		}
+
+		if (!EditorRunBar::get_singleton()->is_playing()) {
+			_post_eval_result(eval_id, "", "No game running — start the game first.");
+			return;
+		}
+
+		ScriptEditorDebugger *debugger = EditorDebuggerNode::get_singleton()->get_current_debugger();
+		if (!debugger || !debugger->is_session_active()) {
+			_post_eval_result(eval_id, "", "No active debugger session.");
+			return;
+		}
+
+		// Send via custom "ai:eval" protocol (works while game is running, no breakpoint needed)
+		debugger->request_ai_eval(expression, eval_id,
+				callable_mp_static(&AIAssistantDock::_on_ai_eval_return_static).bind(eval_id));
+		_add_system_message("[Eval] Evaluating: " + expression);
 	}
+}
+
+// === Screenshot Capture ===
+
+// Static callbacks — bypass ObjectDB validity checks, dispatch to singleton instance.
+void AIAssistantDock::_screenshot_for_button_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect) {
+	if (singleton) {
+		singleton->_on_screenshot_for_button(p_w, p_h, p_path, p_rect);
+	}
+}
+
+void AIAssistantDock::_screenshot_for_tool_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id) {
+	if (singleton) {
+		singleton->_on_screenshot_for_tool(p_w, p_h, p_path, p_rect, p_id);
+	}
+}
+
+void AIAssistantDock::_on_screenshot_pressed() {
+	if (!EditorRunBar::get_singleton()->is_playing()) {
+		_add_system_message("[Screenshot] No game running — press F5 to run the game first.");
+		return;
+	}
+
+	bool ok = EditorRunBar::get_singleton()->request_screenshot(
+			callable_mp_static(&AIAssistantDock::_screenshot_for_button_static));
+
+	if (!ok) {
+		_add_system_message("[Screenshot] Could not request screenshot. Make sure the game is running in embedded mode.");
+	}
+}
+
+void AIAssistantDock::_on_screenshot_for_tool(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id) {
+	Ref<Image> img = Image::load_from_file(p_path);
+	if (img.is_null() || img->is_empty()) {
+		_post_screenshot_result(p_id, "");
+		return;
+	}
+	Vector<uint8_t> png_data = img->save_png_to_buffer();
+	String b64 = CryptoCore::b64_encode_str(png_data.ptr(), png_data.size());
+	_post_screenshot_result(p_id, b64);
+}
+
+void AIAssistantDock::_on_screenshot_for_button(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect) {
+	if (p_path.is_empty()) {
+		_add_system_message("[Screenshot] Failed: no screenshot returned from game.");
+		return;
+	}
+	Ref<Image> img = Image::load_from_file(p_path);
+	if (img.is_null() || img->is_empty()) {
+		_add_system_message("[Screenshot] Failed to load screenshot.");
+		return;
+	}
+	Vector<uint8_t> png_data = img->save_png_to_buffer();
+	if (!_add_attachment_from_raw_data("screenshot.png", "image/png", png_data)) {
+		_add_system_message("[Screenshot] Failed to attach screenshot.");
+		return;
+	}
+	if (prompt_input->get_text().is_empty()) {
+		prompt_input->set_text("Analyze this screenshot for visual design issues and fix them.");
+	}
+	prompt_input->grab_focus();
+}
+
+
+bool AIAssistantDock::_add_attachment_from_raw_data(const String &p_filename, const String &p_mime, const Vector<uint8_t> &p_data) {
+	if (p_data.is_empty()) {
+		return false;
+	}
+
+	// Load image to generate thumbnail
+	Ref<Image> img;
+	img.instantiate();
+	Error err = img->load_png_from_buffer(p_data);
+	if (err != OK || img->is_empty()) {
+		return false;
+	}
+
+	// Generate thumbnail
+	Ref<Image> thumb = img->duplicate();
+	int tw = thumb->get_width();
+	int th = thumb->get_height();
+	if (tw > th) {
+		th = MAX(1, th * THUMBNAIL_SIZE / tw);
+		tw = THUMBNAIL_SIZE;
+	} else {
+		tw = MAX(1, tw * THUMBNAIL_SIZE / th);
+		th = THUMBNAIL_SIZE;
+	}
+	thumb->resize(tw, th);
+
+	AttachmentInfo att;
+	att.file_path = "";
+	att.filename = p_filename;
+	att.mime_type = p_mime;
+	att.data = p_data;
+	att.thumbnail = ImageTexture::create_from_image(thumb);
+	pending_attachments.push_back(att);
+
+	_rebuild_attachment_previews();
+	return true;
+}
+
+void AIAssistantDock::_post_screenshot_result(const String &p_id, const String &p_b64) {
+	String url = service_url + "/godot/screenshot-result";
+
+	Dictionary body;
+	body["id"] = p_id;
+	body["data"] = p_b64;
+	String json_body = JSON::stringify(body);
+
+	HTTPRequest *req = memnew(HTTPRequest);
+	add_child(req);
+	req->request(url, _get_headers_with_directory(), HTTPClient::METHOD_POST, json_body);
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+}
+
+// === Eval Result ===
+
+void AIAssistantDock::_on_ai_eval_return_static(const Array &p_data, const String &p_id) {
+	if (singleton) {
+		singleton->_on_ai_eval_return(p_data, p_id);
+	}
+}
+
+void AIAssistantDock::_on_ai_eval_return(const Array &p_data, const String &p_id) {
+	// p_data format from ai:eval_return: [eval_id, value_string, error_string]
+	if (p_data.size() >= 3) {
+		String value = p_data[1];
+		String error = p_data[2];
+		if (!error.is_empty()) {
+			_post_eval_result(p_id, "", error);
+		} else {
+			_post_eval_result(p_id, value);
+		}
+	} else {
+		_post_eval_result(p_id, "", "Invalid eval return data");
+	}
+}
+
+void AIAssistantDock::_post_eval_result(const String &p_id, const String &p_value, const String &p_error) {
+	String url = service_url + "/godot/eval-result";
+
+	Dictionary body;
+	body["id"] = p_id;
+	body["value"] = p_value;
+	if (!p_error.is_empty()) {
+		body["error"] = p_error;
+	}
+	String json_body = JSON::stringify(body);
+
+	HTTPRequest *req = memnew(HTTPRequest);
+	add_child(req);
+	req->request(url, _get_headers_with_directory(), HTTPClient::METHOD_POST, json_body);
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
 }
 
 void AIAssistantDock::_report_game_status(bool p_running) {
@@ -3133,7 +4184,7 @@ void AIAssistantDock::_on_game_stopped() {
 	// Small delay to ensure logs are flushed to disk
 	SceneTree *tree = get_tree();
 	if (tree) {
-		tree->create_timer(1.0)->connect("timeout", callable_mp(this, &AIAssistantDock::_auto_verify_game_logs));
+		tree->create_timer(1.0)->connect("timeout", Callable(this, "_auto_verify_game_logs"));
 	}
 }
 
@@ -3175,7 +4226,7 @@ void AIAssistantDock::_on_debugger_output(const String &p_msg, int p_type) {
 		// Use a timer to batch errors and send them to AI after a short delay
 		SceneTree *tree = get_tree();
 		if (tree && pending_debugger_errors.size() == 1) {
-			tree->create_timer(3.0)->connect("timeout", callable_mp(this, &AIAssistantDock::_send_debugger_errors_to_ai));
+			tree->create_timer(3.0)->connect("timeout", Callable(this, "_send_debugger_errors_to_ai"));
 		}
 	} else if (p_type == 3) { // MSG_TYPE_WARNING
 		_add_log_entry("WARN", p_msg, Color(0.9, 0.7, 0.3));
@@ -3195,7 +4246,7 @@ void AIAssistantDock::_on_debugger_error(const String &p_file, int p_line, int p
 	SceneTree *tree = get_tree();
 	if (tree && pending_debugger_errors.size() == 1) {
 		// Only start timer on first error
-		tree->create_timer(3.0)->connect("timeout", callable_mp(this, &AIAssistantDock::_send_debugger_errors_to_ai));
+		tree->create_timer(3.0)->connect("timeout", Callable(this, "_send_debugger_errors_to_ai"));
 	}
 }
 
@@ -3225,7 +4276,7 @@ void AIAssistantDock::_check_debugger_errors() {
 			// Start timer to send errors to AI after game stops or after a delay
 			SceneTree *tree = get_tree();
 			if (tree) {
-				tree->create_timer(5.0)->connect("timeout", callable_mp(this, &AIAssistantDock::_send_debugger_errors_to_ai));
+				tree->create_timer(5.0)->connect("timeout", Callable(this, "_send_debugger_errors_to_ai"));
 			}
 		} else {
 			// Just update the total count in the pending list
@@ -3268,6 +4319,31 @@ void AIAssistantDock::_find_existing_session() {
 		return;
 	}
 
+	// If a session ID was pre-set (e.g., restored from saved state), use it directly.
+	if (!initial_session_id.is_empty()) {
+		session_id = initial_session_id;
+		initial_session_id = "";
+		connection_status = CONNECTED;
+		_update_connection_indicator();
+		_update_status("Connected (restored)", Color(0.5, 1, 0.5));
+		// Re-enable input and clear "Connecting..." text.
+		prompt_input->set_editable(true);
+		prompt_input->set_placeholder(TTR("Type a message..."));
+		send_button->set_disabled(false);
+		_clear_chat_ui();
+		session_history_button->set_text("Restored Session");
+		_add_system_message("Reconnected to previous session.");
+		_load_session_history();
+		_fetch_providers();
+		return;
+	}
+
+	// Docks that must not share sessions (e.g. Art Director) always create a fresh one.
+	if (create_new_session_if_none) {
+		_create_session();
+		return;
+	}
+
 	pending_request = REQUEST_SESSION_LIST;
 	_update_status("Finding session...", Color(1, 1, 0));
 
@@ -3286,7 +4362,7 @@ void AIAssistantDock::_on_session_list_completed(int p_result, int p_code, const
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	String response_text = _body_to_string(p_body);
 	JSON json;
 	Error err = json.parse(response_text);
 
@@ -3296,14 +4372,14 @@ void AIAssistantDock::_on_session_list_completed(int p_result, int p_code, const
 		return;
 	}
 
-	Variant data = json.get_data();
-	if (data.get_type() != Variant::ARRAY) {
+	Variant parsed_data = json.get_data();
+	if (parsed_data.get_type() != Variant::ARRAY) {
 		_add_system_message("Unexpected session list format. Creating new session...");
 		_create_session();
 		return;
 	}
 
-	Array sessions = data;
+	Array sessions = parsed_data;
 	if (sessions.is_empty()) {
 		_add_system_message("No existing sessions found. Creating new session...");
 		_create_session();
@@ -3320,14 +4396,23 @@ void AIAssistantDock::_on_session_list_completed(int p_result, int p_code, const
 
 	session_id = session["id"];
 	coding_standards_injected = false;
-	String title = session.get("title", "Untitled");
+	String session_title = session.get("title", "Untitled");
 
 	connection_status = CONNECTED;
 	_update_status("Connected", Color(0, 1, 0));
 	_update_connection_indicator();
-	reconnect_button->set_text("Disconnect");
 
-	_add_system_message("Resumed session: " + title);
+	// Re-enable input (was disabled during connecting).
+	prompt_input->set_editable(true);
+	prompt_input->set_placeholder(TTR("Type a message..."));
+	send_button->set_disabled(false);
+
+	// Clear "Connecting..." text before loading session history.
+	_clear_chat_ui();
+
+	session_history_button->set_text(session_title.length() > 25 ? session_title.substr(0, 22) + "..." : session_title);
+
+	_add_system_message("Resumed session: " + session_title);
 	_add_system_message("Session ID: " + session_id.substr(0, 8) + "...");
 	_add_system_message("Project directory: " + _get_project_directory());
 
@@ -3361,7 +4446,7 @@ void AIAssistantDock::_load_session_history() {
 	// We'll create a temporary HTTPRequest for this
 	HTTPRequest *history_request = memnew(HTTPRequest);
 	add_child(history_request);
-	history_request->connect("request_completed", callable_mp(this, &AIAssistantDock::_on_session_history_completed));
+	history_request->connect("request_completed", Callable(this, "_on_session_history_completed"));
 
 	String url = service_url + "/session/" + session_id + "/message?directory=" + _get_project_directory().uri_encode();
 	history_request->request(url, _get_headers_with_directory());
@@ -3371,6 +4456,7 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 	// Clean up the temporary HTTPRequest
 	HTTPRequest *sender = Object::cast_to<HTTPRequest>(get_child(get_child_count() - 1));
 	if (sender && sender != http_request && sender != session_list_http_request &&
+		sender != session_history_list_http &&
 		sender != model_http_request && sender != http_auth_request &&
 		sender != logs_http_request &&
 		sender != stream_http_request && sender != command_http_request &&
@@ -3383,7 +4469,7 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	String response_text = _body_to_string(p_body);
 	JSON json;
 	Error err = json.parse(response_text);
 
@@ -3392,13 +4478,13 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 		return;
 	}
 
-	Variant data = json.get_data();
-	if (data.get_type() != Variant::ARRAY) {
+	Variant parsed_data = json.get_data();
+	if (parsed_data.get_type() != Variant::ARRAY) {
 		_add_system_message("[History] Unexpected history format.");
 		return;
 	}
 
-	Array messages = data;
+	Array messages = parsed_data;
 	if (messages.is_empty()) {
 		_add_system_message("[History] No previous messages.");
 		return;
@@ -3418,15 +4504,23 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 		String role = info.get("role", "");
 
 		if (role == "user") {
-			// Extract text from user message parts
+			has_user_message = true;
+			// Extract text from user message parts, skipping injected system content
 			for (int j = 0; j < parts.size(); j++) {
 				Dictionary part = parts[j];
 				String type = part.get("type", "");
 				if (type == "text") {
 					String text = part.get("text", "");
-					if (!text.is_empty()) {
-						_add_user_message(text);
+					if (text.is_empty()) {
+						continue;
 					}
+					// Skip injected system parts (coding standards, project context, skill instructions)
+					if (text.begins_with("[IMPORTANT RULES]") ||
+							text.begins_with("[PROJECT CONTEXT") ||
+							text.begins_with("<skill-instructions")) {
+						continue;
+					}
+					_add_user_message(text);
 				}
 			}
 		} else if (role == "assistant") {
@@ -3454,6 +4548,10 @@ void AIAssistantDock::_on_session_history_completed(int p_result, int p_code, co
 	}
 
 	_add_log_entry("INFO", "Chat history loaded.", Color(0.7, 0.7, 0.7));
+
+	// Scroll to bottom after loading history
+	user_scrolled_up = false;
+	_scroll_chat_to_bottom();
 }
 
 // === Provider/Model Fetching + Auth Flow ===
@@ -3499,7 +4597,7 @@ void AIAssistantDock::_fetch_auth_methods() {
 void AIAssistantDock::_on_provider_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	String body_str;
 	if (p_body.size() > 0) {
-		body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+		body_str = _body_to_string(p_body);
 	}
 
 	print_line("[AIAssistant] Provider HTTP response (type=" + itos(provider_request_type) + "): code=" + itos(p_code) + " body_size=" + itos(p_body.size()));
@@ -3600,14 +4698,36 @@ void AIAssistantDock::_on_provider_request_completed(int p_result, int p_code, c
 			providers.sort_custom<ProviderNameComparator>();
 
 			// Auto-select default model if none selected.
-			if (selected_model_id.is_empty() && defaults.size() > 0) {
-				Array def_keys = defaults.keys();
-				for (int i2 = 0; i2 < def_keys.size(); i2++) {
-					String prov_id = def_keys[i2];
-					if (connected_set.has(prov_id)) {
-						selected_provider_id = prov_id;
-						selected_model_id = String(defaults[prov_id]);
+			// Prefer Anthropic Opus, then any Anthropic model, then fall back to first connected.
+			if (selected_model_id.is_empty()) {
+				// First pass: look for Anthropic Opus model.
+				for (int i2 = 0; i2 < providers.size(); i2++) {
+					if (providers[i2].id == "anthropic" && providers[i2].connected) {
+						for (int m = 0; m < providers[i2].models.size(); m++) {
+							if (providers[i2].models[m].id.contains("opus")) {
+								selected_provider_id = "anthropic";
+								selected_model_id = providers[i2].models[m].id;
+								break;
+							}
+						}
+						// If no Opus found, use the Anthropic default.
+						if (selected_model_id.is_empty() && defaults.has("anthropic")) {
+							selected_provider_id = "anthropic";
+							selected_model_id = String(defaults["anthropic"]);
+						}
 						break;
+					}
+				}
+				// Fall back to first connected provider's default.
+				if (selected_model_id.is_empty() && defaults.size() > 0) {
+					Array def_keys = defaults.keys();
+					for (int i2 = 0; i2 < def_keys.size(); i2++) {
+						String prov_id = def_keys[i2];
+						if (connected_set.has(prov_id)) {
+							selected_provider_id = prov_id;
+							selected_model_id = String(defaults[prov_id]);
+							break;
+						}
 					}
 				}
 			}
@@ -3678,7 +4798,7 @@ void AIAssistantDock::_populate_model_menu() {
 		// Create a submenu for this provider.
 		PopupMenu *sub = memnew(PopupMenu);
 		sub->set_name("provider_" + itos(i));
-		sub->connect("id_pressed", callable_mp(this, &AIAssistantDock::_on_submenu_model_selected));
+		sub->connect("id_pressed", Callable(this, "_on_submenu_model_selected"));
 		provider_submenus.push_back(sub);
 
 		// Add models to the submenu.
@@ -3919,7 +5039,7 @@ void AIAssistantDock::_on_auth_code_submitted() {
 void AIAssistantDock::_on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	String body_str;
 	if (p_body.size() > 0) {
-		body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+		body_str = _body_to_string(p_body);
 	}
 
 	print_line("[AIAssistant] Auth HTTP response (state=" + itos(auth_state) + "): code=" + itos(p_code));
@@ -4023,7 +5143,7 @@ void AIAssistantDock::_on_question_http_request_completed(int p_result, int p_co
 		return;
 	}
 
-	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	String response_text = _body_to_string(p_body);
 	JSON json;
 	Error err = json.parse(response_text);
 
@@ -4031,12 +5151,12 @@ void AIAssistantDock::_on_question_http_request_completed(int p_result, int p_co
 		return;
 	}
 
-	Variant data = json.get_data();
-	if (data.get_type() != Variant::ARRAY) {
+	Variant parsed_data = json.get_data();
+	if (parsed_data.get_type() != Variant::ARRAY) {
 		return;
 	}
 
-	Array questions = data;
+	Array questions = parsed_data;
 	if (questions.is_empty()) {
 		// No pending questions
 		return;
@@ -4124,7 +5244,7 @@ void AIAssistantDock::_show_question_dialog(const Dictionary &p_question) {
 		if (!description.is_empty()) {
 			option_btn->set_tooltip_text(description);
 		}
-		option_btn->connect("pressed", callable_mp(this, &AIAssistantDock::_on_question_option_pressed).bind(i));
+		option_btn->connect("pressed", Callable(this, "_on_question_option_pressed").bind(i));
 		content->add_child(option_btn);
 	}
 
@@ -4134,12 +5254,12 @@ void AIAssistantDock::_show_question_dialog(const Dictionary &p_question) {
 	custom_input->set_placeholder("Or type a custom answer...");
 	custom_input->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	custom_input->set_name("CustomInput");
-	custom_input->connect("text_submitted", callable_mp(this, &AIAssistantDock::_on_question_custom_submitted).unbind(1));
+	custom_input->connect("text_submitted", Callable(this, "_on_question_custom_submitted").unbind(1));
 	custom_container->add_child(custom_input);
 
 	Button *submit_btn = memnew(Button);
 	submit_btn->set_text("Submit");
-	submit_btn->connect("pressed", callable_mp(this, &AIAssistantDock::_on_question_custom_submitted));
+	submit_btn->connect("pressed", Callable(this, "_on_question_custom_submitted"));
 	custom_container->add_child(submit_btn);
 
 	content->add_child(custom_container);
@@ -4274,4 +5394,434 @@ void AIAssistantDock::_send_question_reply(const String &p_request_id, const Arr
 	reply_request->connect("request_completed", callable_mp((Node *)reply_request, &Node::queue_free).unbind(4));
 
 	_add_log_entry("QUESTION", "Sent answer to AI", Color(0.5, 0.9, 0.5));
+}
+
+// === Instance Management ===
+
+void AIAssistantDock::set_instance_id(int p_id) {
+	instance_id = p_id;
+	if (instance_id > 0) {
+		set_title(vformat("AI Assistant #%d", instance_id + 1));
+	}
+}
+
+void AIAssistantDock::set_initial_session_id(const String &p_session_id) {
+	initial_session_id = p_session_id;
+}
+
+void AIAssistantDock::_on_new_instance_pressed() {
+	AIAssistantManager *manager = AIAssistantManager::get_singleton();
+	if (manager && manager->can_spawn()) {
+		manager->spawn_instance();
+	}
+}
+
+void AIAssistantDock::_on_close_instance_pressed() {
+	if (instance_id == 0) {
+		return; // Cannot close primary instance.
+	}
+	AIAssistantManager *manager = AIAssistantManager::get_singleton();
+	if (manager) {
+		manager->close_instance(instance_id);
+	}
+}
+
+// === Session History & Cleanup Functions ===
+
+void AIAssistantDock::_clear_chat_ui() {
+	while (chat_container->get_child_count() > 0) {
+		Node *child = chat_container->get_child(0);
+		chat_container->remove_child(child);
+		memdelete(child);
+	}
+	chat_history.clear();
+	_clear_tool_tracking();
+	_clear_attachments();
+	user_message_indices.clear();
+	collapse_buttons.clear();
+	collapsed_turns.clear();
+	user_message_texts.clear();
+	sticky_header->set_visible(false);
+	sticky_current_turn_index = -1;
+}
+
+void AIAssistantDock::_fire_and_forget_delete_session(const String &p_session_id) {
+	// Attach a temporary HTTPRequest to the editor main screen so it survives
+	// even if this dock is destroyed before the request completes.
+	Node *parent = EditorInterface::get_singleton()->get_editor_main_screen();
+	if (!parent) {
+		return;
+	}
+	HTTPRequest *req = memnew(HTTPRequest);
+	parent->add_child(req);
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+	String url = service_url + "/session/" + p_session_id;
+	req->request(url, _get_headers_with_directory(), HTTPClient::METHOD_DELETE);
+}
+
+void AIAssistantDock::_on_file_removed(const String &p_file) {
+	// When a file is deleted in the editor, tell OpenCode to clean up its AI metadata.
+	if (service_url.is_empty() || connection_status != CONNECTED) {
+		return;
+	}
+	// Only care about asset files (images, models, audio)
+	String ext = p_file.get_extension().to_lower();
+	if (ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "webp" &&
+			ext != "glb" && ext != "gltf" && ext != "tres" &&
+			ext != "mp3" && ext != "ogg" && ext != "wav") {
+		return;
+	}
+
+	// Fire-and-forget DELETE to /ai-assets/metadata/{res_path}
+	Node *parent = EditorInterface::get_singleton()->get_editor_main_screen();
+	if (!parent) {
+		return;
+	}
+	HTTPRequest *req = memnew(HTTPRequest);
+	parent->add_child(req);
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+	String url = service_url + "/ai-assets/metadata/" + p_file.uri_encode();
+	req->request(url, _get_headers_with_directory(), HTTPClient::METHOD_DELETE);
+}
+
+void AIAssistantDock::cleanup_before_close() {
+	// Auto-delete empty sessions (no user messages) when closing the tab.
+	if (!has_user_message && !session_id.is_empty()) {
+		_fire_and_forget_delete_session(session_id);
+	}
+
+	// Stop all timers to prevent callbacks after destruction.
+	if (logs_poll_timer) {
+		logs_poll_timer->stop();
+	}
+	if (command_poll_timer) {
+		command_poll_timer->stop();
+	}
+	if (question_poll_timer) {
+		question_poll_timer->stop();
+	}
+	if (stream_poll_timer) {
+		stream_poll_timer->stop();
+	}
+	if (processing_timer) {
+		processing_timer->stop();
+	}
+	if (auth_poll_timer) {
+		auth_poll_timer->stop();
+	}
+}
+
+void AIAssistantDock::_on_session_history_pressed() {
+	if (connection_status != CONNECTED) {
+		return;
+	}
+
+	// Position the popup below the button.
+	Vector2 btn_pos = session_history_button->get_screen_position();
+	Vector2 btn_size = session_history_button->get_size();
+	session_popup->set_position(Vector2i(btn_pos.x, btn_pos.y + btn_size.y));
+	session_popup->popup();
+
+	// Fetch fresh session list.
+	_fetch_session_list();
+}
+
+void AIAssistantDock::_fetch_session_list() {
+	// Clear and show loading state.
+	while (session_popup_list->get_child_count() > 0) {
+		Node *child = session_popup_list->get_child(0);
+		session_popup_list->remove_child(child);
+		child->queue_free();
+	}
+
+	Label *loading = memnew(Label);
+	loading->set_text("Loading...");
+	loading->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	session_popup_list->add_child(loading);
+
+	String url = service_url + "/session?directory=" + _get_project_directory().uri_encode() + "&roots=true&limit=20";
+	session_history_list_http->cancel_request();
+	session_history_list_http->request(url, _get_headers_with_directory());
+}
+
+void AIAssistantDock::_on_session_history_list_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	// Clear loading state.
+	while (session_popup_list->get_child_count() > 0) {
+		Node *child = session_popup_list->get_child(0);
+		session_popup_list->remove_child(child);
+		child->queue_free();
+	}
+	cached_session_list.clear();
+
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		Label *err_label = memnew(Label);
+		err_label->set_text("[Failed to load sessions]");
+		session_popup_list->add_child(err_label);
+		return;
+	}
+
+	String response_text = _body_to_string(p_body);
+	JSON json;
+	Error err = json.parse(response_text);
+
+	if (err != OK || json.get_data().get_type() != Variant::ARRAY) {
+		Label *err_label = memnew(Label);
+		err_label->set_text("[Invalid response]");
+		session_popup_list->add_child(err_label);
+		return;
+	}
+
+	Array sessions = json.get_data();
+
+	// "+ New Session" button at top.
+	Button *new_btn = memnew(Button);
+	new_btn->set_text("+ New Session");
+	new_btn->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	new_btn->connect("pressed", Callable(this, "_on_session_new_pressed"));
+	session_popup_list->add_child(new_btn);
+
+	if (!sessions.is_empty()) {
+		session_popup_list->add_child(memnew(HSeparator));
+	}
+
+	// Session rows: [label] [delete button]
+	for (int i = 0; i < sessions.size(); i++) {
+		Dictionary session = sessions[i];
+		cached_session_list.push_back(session);
+
+		String session_title = session.get("title", "Untitled");
+		String sid = session.get("id", "");
+
+		if (session_title.length() > 35) {
+			session_title = session_title.substr(0, 32) + "...";
+		}
+
+		// Format time.
+		Dictionary time_dict = session.get("time", Dictionary());
+		double updated_ms = time_dict.get("updated", 0.0);
+		String time_str;
+		if (updated_ms > 0) {
+			Dictionary datetime = Time::get_singleton()->get_datetime_dict_from_unix_time((int64_t)(updated_ms / 1000.0));
+			time_str = vformat("%02d/%02d %02d:%02d",
+				(int)datetime["month"], (int)datetime["day"],
+				(int)datetime["hour"], (int)datetime["minute"]);
+		}
+
+		HBoxContainer *row = memnew(HBoxContainer);
+		session_popup_list->add_child(row);
+
+		// Session button (click to switch).
+		Button *session_btn = memnew(Button);
+		String label = sid == session_id ? String(U"\u2713 ") + session_title : session_title;
+		if (!time_str.is_empty()) {
+			label += "  [" + time_str + "]";
+		}
+		session_btn->set_text(label);
+		session_btn->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		session_btn->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		session_btn->connect("pressed", Callable(this, "_on_session_item_clicked").bind(i));
+		row->add_child(session_btn);
+
+		// Rename button.
+		Button *rename_btn = memnew(Button);
+		rename_btn->set_text(U"\u270E");
+		rename_btn->set_tooltip_text("Rename this session");
+		rename_btn->set_custom_minimum_size(Size2(28, 0));
+		rename_btn->connect("pressed", Callable(this, "_on_session_rename_pressed").bind(i));
+		row->add_child(rename_btn);
+
+		// Delete button.
+		Button *del_btn = memnew(Button);
+		del_btn->set_text("-");
+		del_btn->set_tooltip_text("Delete this session");
+		del_btn->set_custom_minimum_size(Size2(28, 0));
+		del_btn->connect("pressed", Callable(this, "_on_session_delete_pressed").bind(i));
+		row->add_child(del_btn);
+	}
+
+	if (sessions.is_empty()) {
+		Label *empty_label = memnew(Label);
+		empty_label->set_text("[No sessions found]");
+		empty_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		session_popup_list->add_child(empty_label);
+	}
+}
+
+void AIAssistantDock::_on_session_new_pressed() {
+	session_popup->hide();
+
+	if (!has_user_message && !session_id.is_empty()) {
+		_fire_and_forget_delete_session(session_id);
+	}
+
+	_clear_chat_ui();
+	_add_system_message("Creating new session...");
+
+	session_id = "";
+	has_user_message = false;
+	coding_standards_injected = false;
+	_create_session();
+}
+
+void AIAssistantDock::_on_session_item_clicked(int p_index) {
+	session_popup->hide();
+
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	Dictionary session = cached_session_list[p_index];
+	String sid = session.get("id", "");
+	String session_title = session.get("title", "Untitled");
+
+	if (sid == session_id) {
+		return; // Already on this session.
+	}
+
+	_switch_to_session(sid, session_title);
+}
+
+void AIAssistantDock::_switch_to_session(const String &p_session_id, const String &p_title) {
+	// If current session is empty (no user messages), auto-delete it.
+	if (!has_user_message && !session_id.is_empty()) {
+		_fire_and_forget_delete_session(session_id);
+	}
+
+	_clear_chat_ui();
+
+	// Switch to new session.
+	session_id = p_session_id;
+	has_user_message = false;
+	coding_standards_injected = false;
+
+	// Re-enable input (may have been disabled in "no session" state).
+	prompt_input->set_editable(true);
+	prompt_input->set_placeholder(TTR("Type a message..."));
+	send_button->set_disabled(false);
+
+	String display_title = p_title.length() > 25 ? p_title.substr(0, 22) + "..." : p_title;
+	session_history_button->set_text(display_title);
+
+	_add_system_message("Switched to session: " + p_title);
+	_add_system_message("Session ID: " + session_id.substr(0, 8) + "...");
+
+	// Load chat history from the new session.
+	_load_session_history();
+}
+
+void AIAssistantDock::_on_session_delete_pressed(int p_index) {
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	session_popup->hide();
+
+	// Store which session is pending deletion.
+	session_pending_delete_index = p_index;
+
+	Dictionary session = cached_session_list[p_index];
+	String session_title = session.get("title", "Untitled");
+	session_delete_confirm->set_text(TTR("Delete session \"") + session_title + "\"?");
+	session_delete_confirm->popup_centered();
+}
+
+void AIAssistantDock::_on_session_delete_confirmed() {
+	int p_index = session_pending_delete_index;
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	Dictionary session = cached_session_list[p_index];
+	String sid = session.get("id", "");
+	String session_title = session.get("title", "Untitled");
+
+	if (sid.is_empty()) {
+		return;
+	}
+
+	// Fire-and-forget DELETE.
+	_fire_and_forget_delete_session(sid);
+
+	// If the deleted session is the current one, clear UI and enter "no session" state.
+	if (sid == session_id) {
+		_clear_chat_ui();
+
+		session_id = "";
+		has_user_message = false;
+		coding_standards_injected = false;
+
+		session_history_button->set_text("No Session");
+		prompt_input->set_editable(false);
+		prompt_input->set_placeholder(TTR("Select or create a session to start chatting..."));
+		send_button->set_disabled(true);
+	}
+
+	_add_system_message("Session \"" + session_title + "\" deleted.");
+
+	// Remove from cached list.
+	cached_session_list.remove_at(p_index);
+	session_pending_delete_index = -1;
+}
+
+void AIAssistantDock::_on_session_rename_pressed(int p_index) {
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	session_popup->hide();
+
+	session_pending_rename_index = p_index;
+
+	Dictionary session = cached_session_list[p_index];
+	String session_title = session.get("title", "Untitled");
+	session_rename_input->set_text(session_title);
+	session_rename_input->select_all();
+	session_rename_dialog->popup_centered();
+	session_rename_input->grab_focus();
+}
+
+void AIAssistantDock::_on_session_rename_confirmed() {
+	int p_index = session_pending_rename_index;
+	if (p_index < 0 || p_index >= cached_session_list.size()) {
+		return;
+	}
+
+	String new_title = session_rename_input->get_text().strip_edges();
+	if (new_title.is_empty()) {
+		return;
+	}
+
+	Dictionary session = cached_session_list[p_index];
+	String sid = session.get("id", "");
+	if (sid.is_empty()) {
+		return;
+	}
+
+	// Send PATCH request to rename session.
+	String url = service_url + "/session/" + sid;
+	Vector<String> headers = _get_headers_with_directory();
+
+	Dictionary body;
+	body["title"] = new_title;
+	String body_str = JSON::stringify(body);
+
+	session_rename_http->request(url, headers, HTTPClient::METHOD_PATCH, body_str);
+
+	// Optimistically update cached data and UI.
+	session["title"] = new_title;
+	cached_session_list.set(p_index, session);
+
+	if (sid == session_id) {
+		String display = new_title.length() > 25 ? new_title.substr(0, 22) + "..." : new_title;
+		session_history_button->set_text(display);
+	}
+
+	_add_system_message("Session renamed to \"" + new_title + "\".");
+	session_pending_rename_index = -1;
+}
+
+void AIAssistantDock::_on_session_rename_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		_add_system_message("Failed to rename session (HTTP " + String::num_int64(p_code) + ").");
+	}
 }

@@ -174,17 +174,8 @@ void AIAssetGenerationManager::_on_prompt_confirmed(const String &p_prompt, cons
 	String path = prompt_dialog->get_asset_path();
 	print_line(vformat("AIAssetGenerationManager: prompt_confirmed for '%s', model='%s'", path, p_model));
 
-	// Save transparent_bg option to metadata parameters before generation
-	bool transparent_bg = prompt_dialog->get_transparent_bg();
 	Dictionary asset_meta = AIAssetMetadata::get_metadata(path);
-	Dictionary params = asset_meta.get(AIAssetMetadata::KEY_PARAMETERS, Dictionary());
-	if (transparent_bg) {
-		params["transparent_bg"] = true;
-	} else {
-		params.erase("transparent_bg");
-	}
-	asset_meta[AIAssetMetadata::KEY_PARAMETERS] = params;
-	// Also save updated prompt/negative_prompt/model/seed
+	// Save updated prompt/negative_prompt/model/seed
 	asset_meta[AIAssetMetadata::KEY_PROMPT] = p_prompt;
 	asset_meta[AIAssetMetadata::KEY_NEGATIVE_PROMPT] = p_negative_prompt;
 	asset_meta[AIAssetMetadata::KEY_MODEL] = p_model;
@@ -455,24 +446,6 @@ void AIAssetGenerationManager::_post_process_asset() {
 	}
 
 	bool modified = false;
-
-	// Step 0: Convert white/near-white background to transparent (if enabled)
-	bool transparent_bg = meta_params.get("transparent_bg", false);
-	if (transparent_bg) {
-		if (img->get_format() != Image::FORMAT_RGBA8) {
-			img->convert(Image::FORMAT_RGBA8);
-		}
-		for (int y = 0; y < img->get_height(); y++) {
-			for (int x = 0; x < img->get_width(); x++) {
-				Color c = img->get_pixel(x, y);
-				if (c.r > 0.92f && c.g > 0.92f && c.b > 0.92f) {
-					img->set_pixel(x, y, Color(c.r, c.g, c.b, 0.0f));
-				}
-			}
-		}
-		print_line("AI Asset: converted white background to transparent");
-		modified = true;
-	}
 
 	// Step 1+2: Crop and resize (only if size is specified)
 	String size_str = meta_params.get("size", "");

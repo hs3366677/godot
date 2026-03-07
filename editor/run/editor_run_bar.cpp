@@ -708,3 +708,7 @@ EditorRunBar::EditorRunBar() {
 	write_movie_button->set_accessibility_name(TTRC("Enable Movie Maker Mode"));
 	write_movie_button->set_flat(false);
 }
+
+bool EditorRunBar::request_screenshot(const Callable &p_callback) {
+	return editor_run.request_screenshot(p_callback);
+}

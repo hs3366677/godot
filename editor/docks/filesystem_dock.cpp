@@ -641,6 +641,8 @@ void FileSystemDock::_notification(int p_what) {
 				button_file_list_display_mode->set_button_icon(get_editor_theme_icon(SNAME("FileList")));
 			}
 
+			button_refresh->set_button_icon(get_editor_theme_icon(SNAME("Reload")));
+
 			tree_search_box->set_right_icon(get_editor_theme_icon(SNAME("Search")));
 			tree_button_sort->set_button_icon(get_editor_theme_icon(SNAME("Sort")));
 
@@ -3117,6 +3119,10 @@ void FileSystemDock::_rescan() {
 	EditorFileSystem::get_singleton()->scan();
 }
 
+void FileSystemDock::_on_refresh_pressed() {
+	EditorFileSystem::get_singleton()->scan();
+}
+
 void FileSystemDock::_change_split_mode() {
 	DisplayMode next_mode = DISPLAY_MODE_TREE_ONLY;
 	if (display_mode == DISPLAY_MODE_VSPLIT) {
@@ -4672,6 +4678,13 @@ FileSystemDock::FileSystemDock() {
 	button_toggle_display_mode->set_tooltip_text(TTRC("Change Split Mode"));
 	button_toggle_display_mode->set_theme_type_variation("FlatMenuButton");
 	toolbar_hbc->add_child(button_toggle_display_mode);
+
+	button_refresh = memnew(Button);
+	button_refresh->connect(SceneStringName(pressed), callable_mp(this, &FileSystemDock::_on_refresh_pressed));
+	button_refresh->set_focus_mode(FOCUS_ACCESSIBILITY);
+	button_refresh->set_tooltip_text(TTRC("Rescan Filesystem"));
+	button_refresh->set_theme_type_variation("FlatMenuButton");
+	toolbar_hbc->add_child(button_refresh);
 
 	toolbar2_hbc = memnew(HBoxContainer);
 	top_vbc->add_child(toolbar2_hbc);
