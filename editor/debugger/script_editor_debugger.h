@@ -112,8 +112,8 @@ private:
 	int error_count;
 	int warning_count;
 
-	bool skip_breakpoints_value = false;
-	bool ignore_error_breaks_value = false;
+	bool skip_breakpoints_value = true;
+	bool ignore_error_breaks_value = true;
 	Ref<Script> stack_script;
 
 	TabContainer *tabs = nullptr;
@@ -241,6 +241,7 @@ private:
 	void _msg_window_title(uint64_t p_thread_id, const Array &p_data);
 	void _msg_embed_suspend_toggle(uint64_t p_thread_id, const Array &p_data);
 	void _msg_embed_next_frame(uint64_t p_thread_id, const Array &p_data);
+	void _msg_ai_toggle_gif_recording(uint64_t p_thread_id, const Array &p_data);
 
 	void _parse_message(const String &p_msg, uint64_t p_thread_id, const Array &p_data);
 	void _set_reason_text(const String &p_reason, MessageType p_type);
@@ -306,6 +307,7 @@ public:
 	enum EmbedShortcutAction {
 		EMBED_SUSPEND_TOGGLE,
 		EMBED_NEXT_FRAME,
+		EMBED_AI_TOGGLE_GIF,
 	};
 
 	void request_remote_objects(const TypedArray<uint64_t> &p_obj_ids, bool p_update_selection = true);
@@ -345,6 +347,7 @@ public:
 
 	int get_error_count() const { return error_count; }
 	int get_warning_count() const { return warning_count; }
+	String get_error_text(int p_max_items = 20) const;
 	String get_stack_script_file() const;
 	int get_stack_script_line() const;
 	int get_stack_script_frame() const;

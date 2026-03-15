@@ -571,7 +571,31 @@ Error AIAssetMetadata::delete_version(const String &p_asset_path, int p_version)
 Array AIAssetMetadata::list_versions(const String &p_asset_path) {
 	Array result;
 	Dictionary index = read_version_index(p_asset_path);
+
+	// If no history array but metadata exists with a version, synthesize a single entry
+	// from the current metadata. This handles assets generated before history tracking.
 	if (!index.has(KEY_HISTORY)) {
+		int ver = (int)index.get(KEY_VERSION, 0);
+		if (ver > 0 && !index.is_empty()) {
+			Dictionary entry;
+			entry[KEY_VERSION] = ver;
+			entry[KEY_ORIGIN] = index.get(KEY_ORIGIN, "");
+			entry[KEY_PROMPT] = index.get(KEY_PROMPT, "");
+			entry[KEY_MODEL] = index.get(KEY_MODEL, "");
+			entry[KEY_NEGATIVE_PROMPT] = index.get(KEY_NEGATIVE_PROMPT, "");
+			entry[KEY_PROVIDER] = index.get(KEY_PROVIDER, "");
+			entry[KEY_SEED] = index.get(KEY_SEED, -1);
+			entry[KEY_PARAMETERS] = index.get(KEY_PARAMETERS, Dictionary());
+			entry[KEY_GENERATED_AT] = index.get(KEY_GENERATED_AT, index.get(KEY_CREATED_AT, ""));
+			entry[KEY_ORIGINAL_FILENAME] = index.get(KEY_ORIGINAL_FILENAME, "");
+			entry["is_current"] = true;
+			entry["file_exists"] = FileAccess::exists(p_asset_path);
+			entry["has_raw"] = false;
+			entry["post_processing"] = Array();
+			entry["raw_dimensions"] = String();
+			entry["final_dimensions"] = String();
+			result.push_back(entry);
+		}
 		return result;
 	}
 
@@ -595,6 +619,15 @@ Array AIAssetMetadata::list_versions(const String &p_asset_path) {
 		entry[KEY_ORIGINAL_FILENAME] = ver_meta.get(KEY_ORIGINAL_FILENAME, "");
 		entry["is_current"] = (ver == current);
 		entry["file_exists"] = FileAccess::exists(get_version_file_path(p_asset_path, ver));
+
+		// Check for raw file (pre-post-processing output from AI model)
+		String raw_path = get_version_dir(p_asset_path).path_join(vformat("v%d_raw.%s", ver, p_asset_path.get_extension()));
+		entry["has_raw"] = FileAccess::exists(raw_path);
+
+		// Pass through post-processing and dimension info
+		entry["post_processing"] = ver_meta.get("post_processing", Array());
+		entry["raw_dimensions"] = ver_meta.get("raw_dimensions", "");
+		entry["final_dimensions"] = ver_meta.get("final_dimensions", "");
 
 		result.push_back(entry);
 	}

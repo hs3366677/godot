@@ -738,61 +738,117 @@ Error RemoteDebugger::_core_capture(const String &p_cmd, const Array &p_data, bo
 Error RemoteDebugger::_ai_capture(const String &p_cmd, const Array &p_data, bool &r_captured) {
 	r_captured = true;
 	if (p_cmd == "eval") {
-		// Evaluate a GDScript expression at runtime (without requiring a breakpoint).
-		// p_data: [expression_string, eval_id]
+		// Execute GDScript code at runtime via dynamic script compilation.
+		// p_data: [code_string, eval_id]
 		ERR_FAIL_COND_V(p_data.size() < 2, ERR_INVALID_DATA);
-		String expression_str = p_data[0];
+		String code = p_data[0];
 		String eval_id = p_data[1];
-
-		// Build input names and values from engine singletons (same as breakpoint eval,
-		// but without stack frame locals since we're not paused).
-		PackedStringArray input_names;
-		Array input_vals;
-
-		// Add exposed engine singletons (Input, Engine, etc.)
-		LocalVector<StringName> native_types;
-		ClassDB::get_class_list(native_types);
-		for (const StringName &class_name : native_types) {
-			if (!ClassDB::is_class_exposed(class_name) || !Engine::get_singleton()->has_singleton(class_name) || Engine::get_singleton()->is_singleton_editor_only(class_name)) {
-				continue;
-			}
-			input_names.append(class_name);
-			input_vals.append(Engine::get_singleton()->get_singleton_object(class_name));
-		}
-
-		// Add user-defined global classes
-		LocalVector<StringName> user_types;
-		ScriptServer::get_global_class_list(user_types);
-		for (const StringName &class_name : user_types) {
-			String scr_path = ScriptServer::get_global_class_path(class_name);
-			Ref<Script> scr = ResourceLoader::load(scr_path, "Script");
-			if (scr.is_valid()) {
-				input_names.append(class_name);
-				input_vals.append(scr);
-			}
-		}
-
-		// Evaluate the expression with the main loop (SceneTree) as the base object.
-		// This gives access to get_tree(), get_node(), etc.
-		Expression expression;
-		Error err = expression.parse(expression_str, input_names);
 
 		Array result;
 		result.push_back(eval_id);
 
-		if (err != OK) {
-			result.push_back(""); // value
-			result.push_back(expression.get_error_text()); // error
+		// Get GDScript language
+		ScriptLanguage *gdscript_lang = nullptr;
+		for (int i = 0; i < ScriptServer::get_language_count(); i++) {
+			if (ScriptServer::get_language(i)->get_name() == "GDScript") {
+				gdscript_lang = ScriptServer::get_language(i);
+				break;
+			}
+		}
+		if (!gdscript_lang) {
+			result.push_back("");
+			result.push_back("GDScript language not available");
+			send_message("ai:eval_return", result);
+			r_captured = true;
+			return OK;
+		}
+
+		MainLoop *main_loop = OS::get_singleton()->get_main_loop();
+		Object *scene = nullptr;
+		if (main_loop) {
+			Variant current_scene = main_loop->call("get_current_scene");
+			if (current_scene.get_type() == Variant::OBJECT && current_scene.operator Object *() != nullptr) {
+				scene = current_scene.operator Object *();
+			}
+		}
+
+		// Single-line without statements → auto-prepend "return"
+		bool is_single_expr = !code.contains("\n") &&
+				!code.contains("var ") &&
+				!code.begins_with("if ") &&
+				!code.begins_with("for ") &&
+				!code.begins_with("while ") &&
+				!code.begins_with("return ");
+
+		// Wrap in a script function — only alias params that the code actually uses
+		bool uses_scene = code.contains("scene");
+		bool uses_tree = code.contains("tree");
+		String wrapped = "extends RefCounted\n\nfunc _ai_exec(_scene, _tree):\n";
+		if (uses_scene) {
+			wrapped += "\tvar scene = _scene\n";
+		}
+		if (uses_tree) {
+			wrapped += "\tvar tree = _tree\n";
+		}
+		if (is_single_expr) {
+			wrapped += "\treturn " + code + "\n";
 		} else {
-			MainLoop *main_loop = OS::get_singleton()->get_main_loop();
-			Object *base_instance = main_loop ? (Object *)main_loop : (Object *)Engine::get_singleton();
-			Variant return_val = expression.execute(input_vals, base_instance);
-			if (expression.has_execute_failed()) {
-				result.push_back(""); // value
-				result.push_back(expression.get_error_text()); // error
+			Vector<String> lines = code.split("\n");
+			for (int i = 0; i < lines.size(); i++) {
+				String line = lines[i];
+				if (line.strip_edges().is_empty()) {
+					wrapped += "\n";
+				} else {
+					wrapped += "\t" + line + "\n";
+				}
+			}
+		}
+
+		// Compile and execute
+		// For single expressions, try with "return" first; if compilation fails
+		// (e.g. void-returning call like Input.action_press), retry without "return".
+		Ref<Script> script = gdscript_lang->create_script();
+		script->set_source_code(wrapped);
+		Error reload_err = script->reload();
+
+		if (reload_err != OK && is_single_expr) {
+			// Retry without "return" — the call likely returns void
+			String wrapped_no_return = "extends RefCounted\n\nfunc _ai_exec(_scene, _tree):\n";
+			if (uses_scene) {
+				wrapped_no_return += "\tvar scene = _scene\n";
+			}
+			if (uses_tree) {
+				wrapped_no_return += "\tvar tree = _tree\n";
+			}
+			wrapped_no_return += "\t" + code + "\n";
+			script = gdscript_lang->create_script();
+			script->set_source_code(wrapped_no_return);
+			reload_err = script->reload();
+			if (reload_err == OK) {
+				wrapped = wrapped_no_return;
+			}
+		}
+
+		if (reload_err != OK) {
+			result.push_back("");
+			result.push_back("Compilation error. Script:\n" + wrapped);
+		} else {
+			Ref<RefCounted> rc;
+			rc.instantiate();
+			rc->set_script(script);
+
+			Variant scene_var = scene ? Variant(scene) : Variant();
+			Variant tree_var = main_loop ? Variant(main_loop) : Variant();
+			const Variant *args[2] = { &scene_var, &tree_var };
+			Callable::CallError ce;
+			Variant ret = rc->callp("_ai_exec", args, 2, ce);
+
+			if (ce.error != Callable::CallError::CALL_OK) {
+				result.push_back("");
+				result.push_back("Execution error (call error " + itos(ce.error) + ")");
 			} else {
-				result.push_back(return_val.stringify()); // value
-				result.push_back(""); // error
+				result.push_back(ret.stringify());
+				result.push_back("");
 			}
 		}
 

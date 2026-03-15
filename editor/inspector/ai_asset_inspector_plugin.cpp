@@ -30,7 +30,6 @@
 #include "ai_asset_inspector_plugin.h"
 
 #include "core/config/project_settings.h"
-#include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "editor/ai_asset_generation_manager.h"
 #include "editor/docks/filesystem_dock.h"
@@ -38,8 +37,11 @@
 #include "editor/editor_string_names.h"
 #include "editor/file_system/editor_file_system.h"
 #include "scene/gui/file_dialog.h"
+#include "scene/gui/panel_container.h"
 #include "scene/gui/separator.h"
-#include "scene/main/http_request.h"
+#include "scene/resources/image_texture.h"
+#include "scene/resources/style_box_flat.h"
+#include "editor/scene/texture/texture_editor_plugin.h"
 
 // =============================================================================
 // AIAssetInspectorPlugin
@@ -93,6 +95,17 @@ void AIAssetInfoControl::_notification(int p_what) {
 		case NOTIFICATION_ENTER_TREE: {
 			// Defer _update_ui so all children (HTTPRequest etc.) are fully in the tree.
 			callable_mp(this, &AIAssetInfoControl::_update_ui).call_deferred();
+			// Connect to pipeline state changes for elapsed time updates
+			AIAssetGenerationManager *mgr = AIAssetGenerationManager::get_singleton();
+			if (mgr && !mgr->is_connected("pipeline_state_changed", callable_mp(this, &AIAssetInfoControl::_on_pipeline_state_changed))) {
+				mgr->connect("pipeline_state_changed", callable_mp(this, &AIAssetInfoControl::_on_pipeline_state_changed));
+			}
+		} break;
+		case NOTIFICATION_EXIT_TREE: {
+			AIAssetGenerationManager *mgr = AIAssetGenerationManager::get_singleton();
+			if (mgr && mgr->is_connected("pipeline_state_changed", callable_mp(this, &AIAssetInfoControl::_on_pipeline_state_changed))) {
+				mgr->disconnect("pipeline_state_changed", callable_mp(this, &AIAssetInfoControl::_on_pipeline_state_changed));
+			}
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
 			_update_ui();
@@ -100,158 +113,109 @@ void AIAssetInfoControl::_notification(int p_what) {
 	}
 }
 
+// Helper: create a sub-section title label with consistent styling.
+static Label *_make_subtitle(const String &p_text) {
+	Label *l = memnew(Label);
+	l->set_text(p_text);
+	l->add_theme_color_override("font_color", Color(0.7, 0.7, 0.7));
+	return l;
+}
+
+// Helper: create a dark-background panel to wrap content.
+static PanelContainer *_make_dark_panel() {
+	PanelContainer *panel = memnew(PanelContainer);
+	Ref<StyleBoxFlat> style;
+	style.instantiate();
+	style->set_bg_color(Color(0.12, 0.12, 0.12, 1.0));
+	style->set_content_margin_all(6);
+	style->set_corner_radius_all(3);
+	panel->add_theme_style_override("panel", style);
+	return panel;
+}
+
 void AIAssetInfoControl::_create_ui() {
-	// 1. Origin badge
-	HBoxContainer *header = memnew(HBoxContainer);
-	add_child(header);
+	// ── AI section header (centered, like CompressedTexture2D type header) ──
+	header_button = memnew(Button);
+	header_button->set_text(TTR("AI"));
+	header_button->set_text_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	header_button->set_disabled(true);
+	header_button->set_focus_mode(FOCUS_NONE);
+	add_child(header_button);
 
-	origin_label = memnew(Label);
-	origin_label->add_theme_font_size_override(SceneStringName(font_size), 14);
-	header->add_child(origin_label);
-
-	add_child(memnew(HSeparator));
-
-	// 1b. Usage section (read-only, shown only when usage metadata exists)
+	// ── Usage ──
 	usage_container = memnew(VBoxContainer);
 	usage_container->set_visible(false);
 	add_child(usage_container);
 
-	Label *usage_header = memnew(Label);
-	usage_header->set_text(TTR("Usage (immutable)"));
-	usage_header->add_theme_font_size_override(SceneStringName(font_size), 13);
-	usage_container->add_child(usage_header);
+	usage_container->add_child(_make_subtitle(TTR("Usage")));
+
+	PanelContainer *usage_panel = _make_dark_panel();
+	usage_container->add_child(usage_panel);
+	VBoxContainer *usage_content = memnew(VBoxContainer);
+	usage_panel->add_child(usage_content);
 
 	usage_role_label = memnew(Label);
 	usage_role_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	usage_container->add_child(usage_role_label);
+	usage_content->add_child(usage_role_label);
 
 	usage_dimensions_label = memnew(Label);
 	usage_dimensions_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	usage_container->add_child(usage_dimensions_label);
+	usage_content->add_child(usage_dimensions_label);
 
 	usage_scene_label = memnew(Label);
 	usage_scene_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	usage_container->add_child(usage_scene_label);
+	usage_content->add_child(usage_scene_label);
 
 	usage_node_path_label = memnew(Label);
 	usage_node_path_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	usage_container->add_child(usage_node_path_label);
+	usage_content->add_child(usage_node_path_label);
 
 	usage_extras_label = memnew(Label);
 	usage_extras_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	usage_container->add_child(usage_extras_label);
+	usage_content->add_child(usage_extras_label);
 
-	usage_container->add_child(memnew(HSeparator));
-
-	// 2. Prompt (editable TextEdit)
-	prompt_title = memnew(Label);
-	prompt_title->set_text(TTR("Prompt:"));
+	// ── Prompt ──
+	prompt_title = _make_subtitle(TTR("Prompt"));
 	add_child(prompt_title);
 
-	prompt_edit = memnew(TextEdit);
-	prompt_edit->set_custom_minimum_size(Size2(0, 200)); // 5 lines
-	prompt_edit->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
-	prompt_edit->set_scroll_past_end_of_file_enabled(false);
-	add_child(prompt_edit);
+	prompt_panel = _make_dark_panel();
+	add_child(prompt_panel);
+	prompt_label = memnew(RichTextLabel);
+	prompt_label->set_use_bbcode(false);
+	prompt_label->set_fit_content(true);
+	prompt_label->set_selection_enabled(true);
+	prompt_label->set_context_menu_enabled(true);
+	prompt_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	prompt_panel->add_child(prompt_label);
 
-	// 3. Negative prompt (editable TextEdit)
-	negative_prompt_title = memnew(Label);
-	negative_prompt_title->set_text(TTR("Negative Prompt:"));
+	// ── Negative Prompt ──
+	negative_prompt_title = _make_subtitle(TTR("Negative Prompt"));
 	add_child(negative_prompt_title);
 
-	negative_prompt_edit = memnew(TextEdit);
-	negative_prompt_edit->set_custom_minimum_size(Size2(0, 130)); // 3 lines
-	negative_prompt_edit->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
-	negative_prompt_edit->set_scroll_past_end_of_file_enabled(false);
-	add_child(negative_prompt_edit);
+	negative_prompt_panel = _make_dark_panel();
+	add_child(negative_prompt_panel);
+	negative_prompt_label = memnew(RichTextLabel);
+	negative_prompt_label->set_use_bbcode(false);
+	negative_prompt_label->set_fit_content(true);
+	negative_prompt_label->set_selection_enabled(true);
+	negative_prompt_label->set_context_menu_enabled(true);
+	negative_prompt_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	negative_prompt_panel->add_child(negative_prompt_label);
 
-	add_child(memnew(HSeparator));
-
-	// 4. Provider & Model row
-	HBoxContainer *model_row = memnew(HBoxContainer);
-	add_child(model_row);
-
-	provider_label = memnew(Label);
-	model_row->add_child(provider_label);
-
-	Control *spacer1 = memnew(Control);
-	spacer1->set_h_size_flags(SIZE_EXPAND_FILL);
-	model_row->add_child(spacer1);
-
-	Label *model_title = memnew(Label);
-	model_title->set_text(TTR("Model:"));
-	model_row->add_child(model_title);
-
-	model_selector = memnew(OptionButton);
-	model_selector->set_custom_minimum_size(Size2(120, 0));
-	model_row->add_child(model_selector);
-
-	// 5. Seed & options row
-	seed_container = memnew(HBoxContainer);
-	add_child(seed_container);
-
-	Label *seed_title = memnew(Label);
-	seed_title->set_text(TTR("Seed:"));
-	seed_container->add_child(seed_title);
-
-	seed_spinbox = memnew(SpinBox);
-	seed_spinbox->set_min(-1);
-	seed_spinbox->set_max(999999999);
-	seed_spinbox->set_value(-1);
-	seed_spinbox->set_tooltip_text(TTR("-1 for random seed"));
-	seed_container->add_child(seed_spinbox);
-
-	random_seed_button = memnew(Button);
-	random_seed_button->set_text(TTR("Random"));
-	random_seed_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_random_seed_pressed));
-	seed_container->add_child(random_seed_button);
-
-	add_child(memnew(HSeparator));
-
-	// 6. AI Assist section
-	ai_assist_container = memnew(VBoxContainer);
-	add_child(ai_assist_container);
-
-	Label *ai_assist_title = memnew(Label);
-	ai_assist_title->set_text(TTR("AI Assist:"));
-	ai_assist_container->add_child(ai_assist_title);
-
-	HBoxContainer *instruction_row = memnew(HBoxContainer);
-	ai_assist_container->add_child(instruction_row);
-
-	instruction_edit = memnew(LineEdit);
-	instruction_edit->set_placeholder(TTR("e.g., \"make it more cartoon-like\""));
-	instruction_edit->set_h_size_flags(SIZE_EXPAND_FILL);
-	instruction_row->add_child(instruction_edit);
-
-	refine_button = memnew(Button);
-	refine_button->set_text(TTR("Refine Prompt"));
-	refine_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_refine_pressed));
-	instruction_row->add_child(refine_button);
-
-	add_child(memnew(HSeparator));
-
-	// 7. Version label
-	version_label = memnew(Label);
-	add_child(version_label);
-
-	// 8. Source label (hybrid only)
+	// Source label (hybrid only)
 	source_label = memnew(Label);
+	source_label->set_visible(false);
 	add_child(source_label);
 
-	// 9. Action buttons (no Edit Prompt, no Copy Prompt)
+	// ── Action buttons ──
 	buttons_container = memnew(HBoxContainer);
+	buttons_container->set_visible(false);
 	add_child(buttons_container);
 
 	generate_button = memnew(Button);
 	generate_button->set_text(TTR("Generate"));
 	generate_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_generate_pressed));
 	buttons_container->add_child(generate_button);
-
-	quick_regen_button = memnew(Button);
-	quick_regen_button->set_text(TTR("Quick Regenerate"));
-	quick_regen_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_quick_regen_pressed));
-	buttons_container->add_child(quick_regen_button);
 
 	enhance_button = memnew(Button);
 	enhance_button->set_text(TTR("AI Enhance..."));
@@ -263,46 +227,29 @@ void AIAssetInfoControl::_create_ui() {
 	view_source_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_view_source_pressed));
 	buttons_container->add_child(view_source_button);
 
-	replace_file_button = memnew(Button);
-	replace_file_button->set_text(TTR("Replace with File..."));
-	replace_file_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_replace_file_pressed));
-	buttons_container->add_child(replace_file_button);
-
 	replace_file_dialog = memnew(FileDialog);
 	replace_file_dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILE);
 	replace_file_dialog->set_access(FileDialog::ACCESS_FILESYSTEM);
-	replace_file_dialog->set_title(TTR("Replace with File"));
+	replace_file_dialog->set_title(TTR("Import from File"));
 	replace_file_dialog->connect("file_selected", callable_mp(this, &AIAssetInfoControl::_on_replace_file_selected));
 	add_child(replace_file_dialog);
 
-	// 10. Status label
+	// Status label (shown only during pipeline operations)
 	status_label = memnew(Label);
 	status_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	status_label->set_visible(false);
 	add_child(status_label);
 
-	// 11. History section
+	// ── Generation History ──
 	_create_history_ui();
-
-	// 12. HTTP request nodes
-	refine_request = memnew(HTTPRequest);
-	add_child(refine_request);
-	refine_request->connect("request_completed", callable_mp(this, &AIAssetInfoControl::_on_refine_completed));
-
-	models_request = memnew(HTTPRequest);
-	add_child(models_request);
-	models_request->connect("request_completed", callable_mp(this, &AIAssetInfoControl::_on_models_received));
 }
 
 void AIAssetInfoControl::_create_history_ui() {
-	add_child(memnew(HSeparator));
-
 	history_container = memnew(VBoxContainer);
 	history_container->set_visible(false);
 	add_child(history_container);
 
-	history_title = memnew(Label);
-	history_title->set_text(TTR("Generation History"));
-	history_title->add_theme_font_size_override(SceneStringName(font_size), 13);
+	history_title = _make_subtitle(TTR("Generation History"));
 	history_container->add_child(history_title);
 
 	history_list = memnew(ItemList);
@@ -328,39 +275,37 @@ void AIAssetInfoControl::_create_history_ui() {
 	delete_version_button->set_disabled(true);
 	delete_version_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_delete_version_pressed));
 	history_buttons->add_child(delete_version_button);
+
+	replace_file_button = memnew(Button);
+	replace_file_button->set_text(TTR("Import from File..."));
+	replace_file_button->connect(SceneStringName(pressed), callable_mp(this, &AIAssetInfoControl::_on_replace_file_pressed));
+	history_buttons->add_child(replace_file_button);
 }
 
 void AIAssetInfoControl::_update_ui() {
-	if (!origin_label) {
+	if (!header_button) {
 		return;
 	}
 
-	// Origin badge
+	// Header: "AI - <origin type>"
 	String origin_text;
-	Color badge_color;
 	switch (origin) {
 		case AIAssetMetadata::ORIGIN_PLACEHOLDER:
-			origin_text = TTR("AI Placeholder");
-			badge_color = Color(1.0, 0.5, 0.0);
+			origin_text = TTR("Placeholder");
 			break;
 		case AIAssetMetadata::ORIGIN_IMPORTED:
 			origin_text = TTR("Imported");
-			badge_color = Color(0.4, 0.7, 1.0);
 			break;
 		case AIAssetMetadata::ORIGIN_GENERATED:
-			origin_text = TTR("AI Generated");
-			badge_color = Color(0.5, 1.0, 0.5);
+			origin_text = TTR("Generated");
 			break;
 		case AIAssetMetadata::ORIGIN_HYBRID:
-			origin_text = TTR("AI Enhanced");
-			badge_color = Color(1.0, 0.5, 1.0);
+			origin_text = TTR("Enhanced");
 			break;
 		default:
 			origin_text = TTR("Unknown");
-			badge_color = Color(0.6, 0.6, 0.6);
 	}
-	origin_label->set_text(origin_text);
-	origin_label->add_theme_color_override("font_color", badge_color);
+	header_button->set_text(vformat("AI - %s", origin_text));
 
 	// Usage section (read-only)
 	Dictionary usage = metadata.get(AIAssetMetadata::KEY_USAGE, Dictionary());
@@ -421,37 +366,12 @@ void AIAssetInfoControl::_update_ui() {
 		usage_container->hide();
 	}
 
-	// Populate prompt fields
+	// Populate prompt fields (read-only)
 	String prompt = metadata.get(AIAssetMetadata::KEY_PROMPT, "");
-	prompt_edit->set_text(prompt);
+	prompt_label->set_text(prompt.is_empty() ? TTR("(none)") : prompt);
 
 	String negative_prompt = metadata.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, "");
-	negative_prompt_edit->set_text(negative_prompt);
-
-	// Provider
-	String provider = metadata.get(AIAssetMetadata::KEY_PROVIDER, "");
-	if (!provider.is_empty()) {
-		provider_label->set_text(vformat(TTR("Provider: %s"), provider));
-		provider_label->show();
-	} else {
-		provider_label->hide();
-	}
-
-	// Load models async
-	_load_models();
-
-	// Seed
-	int seed = (int)metadata.get(AIAssetMetadata::KEY_SEED, -1);
-	seed_spinbox->set_value(seed);
-
-	// Version
-	int version = (int)metadata.get(AIAssetMetadata::KEY_VERSION, 0);
-	if (version > 0) {
-		version_label->set_text(vformat(TTR("Version: %d"), version));
-		version_label->show();
-	} else {
-		version_label->hide();
-	}
+	negative_prompt_label->set_text(negative_prompt.is_empty() ? TTR("(none)") : negative_prompt);
 
 	// Source (hybrid only)
 	String source = metadata.get(AIAssetMetadata::KEY_SOURCE_ASSET, "");
@@ -467,235 +387,40 @@ void AIAssetInfoControl::_update_ui() {
 			origin == AIAssetMetadata::ORIGIN_GENERATED ||
 			origin == AIAssetMetadata::ORIGIN_HYBRID);
 	prompt_title->set_visible(has_prompt);
-	prompt_edit->set_visible(has_prompt);
+	prompt_panel->set_visible(has_prompt);
 	negative_prompt_title->set_visible(has_prompt);
-	negative_prompt_edit->set_visible(has_prompt);
-	ai_assist_container->set_visible(has_prompt);
-	seed_container->set_visible(has_prompt);
+	negative_prompt_panel->set_visible(has_prompt);
 
 	// Show/hide action buttons based on origin
-	generate_button->set_visible(origin == AIAssetMetadata::ORIGIN_PLACEHOLDER);
-	quick_regen_button->set_visible(origin == AIAssetMetadata::ORIGIN_GENERATED);
-	enhance_button->set_visible(origin == AIAssetMetadata::ORIGIN_IMPORTED);
-	view_source_button->set_visible(origin == AIAssetMetadata::ORIGIN_HYBRID);
-	replace_file_button->set_visible(origin == AIAssetMetadata::ORIGIN_PLACEHOLDER || origin == AIAssetMetadata::ORIGIN_GENERATED);
+	bool show_gen = (origin == AIAssetMetadata::ORIGIN_PLACEHOLDER);
+	bool show_enh = (origin == AIAssetMetadata::ORIGIN_IMPORTED);
+	bool show_src = (origin == AIAssetMetadata::ORIGIN_HYBRID);
+	generate_button->set_visible(show_gen);
+	enhance_button->set_visible(show_enh);
+	view_source_button->set_visible(show_src);
+	buttons_container->set_visible(show_gen || show_enh || show_src);
 
 	// Reset history view state
 	is_viewing_history = false;
 	viewed_version = -1;
+	original_preview_texture.unref();
 	_set_editing_enabled(true);
 
 	_update_history_list();
 }
 
 void AIAssetInfoControl::_set_editing_enabled(bool p_enabled) {
-	prompt_edit->set_editable(p_enabled);
-	negative_prompt_edit->set_editable(p_enabled);
-	model_selector->set_disabled(!p_enabled);
-	seed_spinbox->set_editable(p_enabled);
-	random_seed_button->set_disabled(!p_enabled);
-	instruction_edit->set_editable(p_enabled);
-	refine_button->set_disabled(!p_enabled);
 	generate_button->set_disabled(!p_enabled);
-	quick_regen_button->set_disabled(!p_enabled);
 
-	if (!p_enabled) {
-		status_label->set_text(TTR("Viewing historical version (read-only)"));
-	} else {
-		status_label->set_text("");
-	}
+	// Status label no longer used for view state — kept for pipeline status only.
+	status_label->set_text("");
 }
 
 void AIAssetInfoControl::_populate_from_version(const Dictionary &p_version_meta) {
-	prompt_edit->set_text(p_version_meta.get(AIAssetMetadata::KEY_PROMPT, ""));
-	negative_prompt_edit->set_text(p_version_meta.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, ""));
-
-	String model = p_version_meta.get(AIAssetMetadata::KEY_MODEL, "");
-	for (int i = 0; i < model_selector->get_item_count(); i++) {
-		Variant item_meta = model_selector->get_item_metadata(i);
-		String item_model = (item_meta.get_type() == Variant::STRING) ? String(item_meta) : model_selector->get_item_text(i);
-		if (item_model == model) {
-			model_selector->select(i);
-			break;
-		}
-	}
-
-	seed_spinbox->set_value((int)p_version_meta.get(AIAssetMetadata::KEY_SEED, -1));
-
-	int ver = (int)p_version_meta.get(AIAssetMetadata::KEY_VERSION, 0);
-	version_label->set_text(vformat(TTR("Version: %d (historical)"), ver));
-}
-
-void AIAssetInfoControl::_save_fields_to_metadata() {
-	Dictionary asset_meta = AIAssetMetadata::get_metadata(asset_path);
-	asset_meta[AIAssetMetadata::KEY_PROMPT] = get_prompt();
-	asset_meta[AIAssetMetadata::KEY_NEGATIVE_PROMPT] = get_negative_prompt();
-	asset_meta[AIAssetMetadata::KEY_MODEL] = get_selected_model();
-	asset_meta[AIAssetMetadata::KEY_SEED] = get_seed();
-
-	AIAssetMetadata::set_metadata(asset_path, asset_meta);
-	metadata = asset_meta;
-}
-
-// ── HTTP Methods ─────────────────────────────────────────────────────────
-
-Vector<String> AIAssetInfoControl::_get_headers() const {
-	Vector<String> headers;
-	headers.push_back("Content-Type: application/json");
-	headers.push_back("Accept: application/json");
-	String project_path = ProjectSettings::get_singleton()->get_resource_path();
-	headers.push_back("x-opencode-directory: " + ProjectSettings::get_singleton()->globalize_path(project_path));
-	return headers;
-}
-
-void AIAssetInfoControl::_load_models() {
-	if (!is_inside_tree() || !models_request->is_inside_tree()) {
-		// Not in tree yet; the deferred _update_ui call will retry.
-		return;
-	}
-
-	model_selector->clear();
-	model_selector->add_item(TTR("Loading..."), 0);
-
-	// Cancel any in-flight request before starting a new one.
-	models_request->cancel_request();
-
-	String url = service_url + "/ai-assets/models";
-	Error err = models_request->request(url, _get_headers());
-	if (err != OK) {
-		model_selector->clear();
-		model_selector->add_item("default", 0);
-	}
-}
-
-void AIAssetInfoControl::_on_models_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	model_selector->clear();
-
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		print_line(vformat("[AIInspector] Models request failed: result=%d code=%d — using fallback 'default'", p_result, p_code));
-		model_selector->add_item("default", 0);
-		return;
-	}
-
-	String response_str = String::utf8((const char *)p_body.ptr(), p_body.size());
-	JSON json;
-	if (json.parse(response_str) != OK) {
-		model_selector->add_item("default", 0);
-		return;
-	}
-
-	Variant data = json.get_data();
-	if (data.get_type() != Variant::DICTIONARY) {
-		model_selector->add_item("default", 0);
-		return;
-	}
-
-	Dictionary models_by_provider = data;
-	String current_model = metadata.get(AIAssetMetadata::KEY_MODEL, "");
-	String asset_provider = metadata.get(AIAssetMetadata::KEY_PROVIDER, "");
-	int select_idx = -1;
-
-	Array provider_ids = models_by_provider.keys();
-	for (int p = 0; p < provider_ids.size(); p++) {
-		String provider_id = provider_ids[p];
-		// Only show models from the asset's provider.
-		if (!asset_provider.is_empty() && provider_id != asset_provider) {
-			continue;
-		}
-		Variant provider_val = models_by_provider[provider_id];
-		if (provider_val.get_type() != Variant::ARRAY) {
-			continue;
-		}
-		Array models = provider_val;
-		for (int m = 0; m < models.size(); m++) {
-			Dictionary model_dict = models[m];
-			String model_id = model_dict.get("id", "");
-
-			// Build display label with price if available
-			String label = model_id;
-			if (model_dict.has("pricing")) {
-				Dictionary pricing = model_dict["pricing"];
-				double cost = (double)pricing.get("cost", 0.0);
-				if (cost > 0) {
-					label = vformat("%s ($%s)", model_id, String::num(cost, cost < 0.01 ? 4 : 3));
-				}
-			}
-
-			int idx = model_selector->get_item_count();
-			model_selector->add_item(label, idx);
-			model_selector->set_item_metadata(idx, model_id);
-			if (model_id == current_model) {
-				select_idx = idx;
-			}
-		}
-	}
-
-	if (model_selector->get_item_count() == 0) {
-		model_selector->add_item("default", 0);
-	}
-
-	if (select_idx >= 0) {
-		model_selector->select(select_idx);
-	}
-
-	print_line(vformat("[AIInspector] Models loaded: %d models, current='%s' provider='%s' selected_idx=%d",
-			model_selector->get_item_count(), current_model, asset_provider, select_idx));
-}
-
-void AIAssetInfoControl::_on_refine_pressed() {
-	String instruction = instruction_edit->get_text().strip_edges();
-	if (instruction.is_empty()) {
-		return;
-	}
-
-	String current_prompt = prompt_edit->get_text().strip_edges();
-	if (current_prompt.is_empty()) {
-		return;
-	}
-
-	Dictionary body;
-	body["prompt"] = current_prompt;
-	body["instruction"] = instruction;
-
-	String asset_type = metadata.get(AIAssetMetadata::KEY_ASSET_TYPE, "");
-	if (!asset_type.is_empty()) {
-		body["assetType"] = asset_type;
-	}
-
-	String json_body = JSON::stringify(body);
-	String url = service_url + "/ai-assets/refine-prompt";
-
-	refine_button->set_disabled(true);
-	status_label->set_text(TTR("Refining prompt..."));
-
-	refine_request->request(url, _get_headers(), HTTPClient::METHOD_POST, json_body);
-}
-
-void AIAssetInfoControl::_on_refine_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	refine_button->set_disabled(false);
-
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		status_label->set_text(TTR("Failed to refine prompt."));
-		return;
-	}
-
-	String response_str = String::utf8((const char *)p_body.ptr(), p_body.size());
-	JSON json;
-	if (json.parse(response_str) != OK) {
-		status_label->set_text(TTR("Invalid response from server."));
-		return;
-	}
-
-	Dictionary resp = json.get_data();
-	String refined = resp.get("refinedPrompt", "");
-
-	if (!refined.is_empty()) {
-		prompt_edit->set_text(refined);
-		instruction_edit->clear();
-		status_label->set_text(TTR("Prompt refined."));
-	} else {
-		status_label->set_text(TTR("No refined prompt returned."));
-	}
+	String prompt = p_version_meta.get(AIAssetMetadata::KEY_PROMPT, "");
+	prompt_label->set_text(prompt.is_empty() ? TTR("(none)") : prompt);
+	String neg = p_version_meta.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, "");
+	negative_prompt_label->set_text(neg.is_empty() ? TTR("(none)") : neg);
 }
 
 // ── History ──────────────────────────────────────────────────────────────
@@ -708,48 +433,38 @@ void AIAssetInfoControl::_update_history_list() {
 	history_list->clear();
 
 	Array versions = AIAssetMetadata::list_versions(asset_path);
-	bool has_history = (origin == AIAssetMetadata::ORIGIN_GENERATED ||
+
+	// Always show history section for trackable origins
+	bool has_history_section = (origin == AIAssetMetadata::ORIGIN_GENERATED ||
 			origin == AIAssetMetadata::ORIGIN_HYBRID ||
-			origin == AIAssetMetadata::ORIGIN_IMPORTED);
-	history_container->set_visible(has_history && versions.size() > 0);
+			origin == AIAssetMetadata::ORIGIN_IMPORTED ||
+			origin == AIAssetMetadata::ORIGIN_PLACEHOLDER);
+	history_container->set_visible(has_history_section);
 
 	if (versions.size() == 0) {
+		history_list->add_item(TTR("No generation history yet"));
+		history_list->set_item_disabled(0, true);
+		use_version_button->set_disabled(true);
+		delete_version_button->set_disabled(true);
 		return;
 	}
 
 	for (int i = versions.size() - 1; i >= 0; i--) {
 		Dictionary entry = versions[i];
 		int ver = (int)entry.get(AIAssetMetadata::KEY_VERSION, 0);
-		String ver_prompt = entry.get(AIAssetMetadata::KEY_PROMPT, "");
-		String ver_origin = entry.get(AIAssetMetadata::KEY_ORIGIN, "");
 		bool is_current = (bool)entry.get("is_current", false);
 		bool file_exists = (bool)entry.get("file_exists", false);
 
-		// For imported versions with no prompt, show the source filename instead.
-		if (ver_prompt.is_empty() && ver_origin == "imported") {
-			ver_prompt = entry.get(AIAssetMetadata::KEY_ORIGINAL_FILENAME, "(manual import)");
-			if (ver_prompt.is_empty()) {
-				ver_prompt = "(manual import)";
-			}
-		}
-
-		String origin_tag;
-		if (ver_origin == "imported") {
-			origin_tag = " [Manual]";
-		}
-
-		String truncated = ver_prompt.length() > 40 ? ver_prompt.left(40) + "..." : ver_prompt;
 		String label;
 		if (is_current) {
-			label = vformat(U"\u2605 v%d%s \u2014 %s", ver, origin_tag, truncated);
+			label = vformat(U"\u2605 v%d (current)", ver);
 		} else {
-			label = vformat(U"   v%d%s \u2014 %s", ver, origin_tag, truncated);
+			label = vformat(U"   v%d", ver);
 		}
 
 		int idx = history_list->get_item_count();
 		history_list->add_item(label);
 		history_list->set_item_metadata(idx, ver);
-		history_list->set_item_tooltip(idx, ver_prompt);
 		history_list->set_item_disabled(idx, !file_exists);
 	}
 
@@ -771,25 +486,44 @@ void AIAssetInfoControl::set_asset_path(const String &p_path) {
 }
 
 void AIAssetInfoControl::_on_generate_pressed() {
-	if (!AIAssetGenerationManager::get_singleton() || AIAssetGenerationManager::get_singleton()->is_busy()) {
+	AIAssetGenerationManager *mgr = AIAssetGenerationManager::get_singleton();
+	if (!mgr) {
 		return;
 	}
-	_save_fields_to_metadata();
-	String sel_model = get_selected_model();
-	print_line(vformat("[AIInspector] Generate pressed: path='%s' model='%s' seed=%d", asset_path, sel_model, get_seed()));
-	AIAssetGenerationManager::get_singleton()->generate_with_params(
-			asset_path, get_prompt(), get_negative_prompt(), sel_model, get_seed());
+	// If pipeline is running for this asset, stop it
+	if (mgr->get_pipeline_asset_path() == asset_path) {
+		mgr->cancel_pipeline();
+		return;
+	}
+	if (mgr->is_busy()) {
+		return;
+	}
+	String sel_model = metadata.get(AIAssetMetadata::KEY_MODEL, "");
+	print_line(vformat("[AIInspector] Generate pressed: path='%s' model='%s'", asset_path, sel_model));
+	mgr->generate_with_params(asset_path, get_prompt(), get_negative_prompt(), sel_model, -1);
 }
 
-void AIAssetInfoControl::_on_quick_regen_pressed() {
-	if (!AIAssetGenerationManager::get_singleton() || AIAssetGenerationManager::get_singleton()->is_busy()) {
-		return;
+void AIAssetInfoControl::_on_pipeline_state_changed(const String &p_path, bool p_active, double p_elapsed) {
+	if (p_path != asset_path) {
+		return; // Not our asset
 	}
-	_save_fields_to_metadata();
-	String sel_model = get_selected_model();
-	print_line(vformat("[AIInspector] Quick regen pressed: path='%s' model='%s'", asset_path, sel_model));
-	AIAssetGenerationManager::get_singleton()->generate_with_params(
-			asset_path, get_prompt(), get_negative_prompt(), sel_model, -1);
+
+	if (p_active) {
+		// Show elapsed time — button acts as Stop button (stays enabled)
+		int secs = (int)p_elapsed;
+		int mins = secs / 60;
+		secs = secs % 60;
+		String time_str = mins > 0 ? vformat("%d:%02d", mins, secs) : vformat("%ds", secs);
+		String stop_text = vformat(TTR("Stop (%s)"), time_str);
+		generate_button->set_text(stop_text);
+		generate_button->set_disabled(false);
+	} else {
+		// Pipeline finished — restore button text and refresh UI
+		generate_button->set_text(TTR("Generate"));
+		generate_button->set_disabled(false);
+		// Reload metadata and refresh the inspector
+		callable_mp(this, &AIAssetInfoControl::_update_ui).call_deferred();
+	}
 }
 
 void AIAssetInfoControl::_on_enhance_pressed() {
@@ -803,10 +537,6 @@ void AIAssetInfoControl::_on_view_source_pressed() {
 	if (!source.is_empty() && FileSystemDock::get_singleton()) {
 		FileSystemDock::get_singleton()->navigate_to_path(source);
 	}
-}
-
-void AIAssetInfoControl::_on_random_seed_pressed() {
-	seed_spinbox->set_value(Math::rand() % 999999999);
 }
 
 void AIAssetInfoControl::_on_replace_file_pressed() {
@@ -847,6 +577,21 @@ void AIAssetInfoControl::_on_replace_file_selected(const String &p_path) {
 	set_asset_path(asset_path);
 }
 
+// Find the TexturePreview sibling to update the existing preview.
+TexturePreview *AIAssetInfoControl::_find_texture_preview() {
+	Node *parent = get_parent();
+	if (!parent) {
+		return nullptr;
+	}
+	for (int i = 0; i < parent->get_child_count(); i++) {
+		TexturePreview *tp = Object::cast_to<TexturePreview>(parent->get_child(i));
+		if (tp) {
+			return tp;
+		}
+	}
+	return nullptr;
+}
+
 void AIAssetInfoControl::_on_history_item_selected(int p_index) {
 	int selected_version = history_list->get_item_metadata(p_index);
 	int current_version = AIAssetMetadata::get_current_version(asset_path);
@@ -856,16 +601,24 @@ void AIAssetInfoControl::_on_history_item_selected(int p_index) {
 	use_version_button->set_disabled(is_current || is_disabled);
 	delete_version_button->set_disabled(is_current || is_disabled);
 
+	TexturePreview *preview = _find_texture_preview();
+
 	if (is_current) {
 		// Restore current metadata to fields
 		is_viewing_history = false;
 		viewed_version = -1;
-		prompt_edit->set_text(metadata.get(AIAssetMetadata::KEY_PROMPT, ""));
-		negative_prompt_edit->set_text(metadata.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, ""));
-		seed_spinbox->set_value((int)metadata.get(AIAssetMetadata::KEY_SEED, -1));
-		int ver = (int)metadata.get(AIAssetMetadata::KEY_VERSION, 0);
-		version_label->set_text(vformat(TTR("Version: %d"), ver));
+		String cur_prompt = metadata.get(AIAssetMetadata::KEY_PROMPT, "");
+		prompt_label->set_text(cur_prompt.is_empty() ? TTR("(none)") : cur_prompt);
+		String cur_neg = metadata.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, "");
+		negative_prompt_label->set_text(cur_neg.is_empty() ? TTR("(none)") : cur_neg);
 		_set_editing_enabled(true);
+
+		// Restore original texture in the existing preview
+		if (preview && original_preview_texture.is_valid()) {
+			TextureRect *display = preview->get_texture_display();
+			display->set_texture(original_preview_texture);
+			preview->_update_texture_display_ratio();
+		}
 	} else {
 		// Load historical version metadata into fields (read-only)
 		Dictionary ver_meta = AIAssetMetadata::read_version_meta(asset_path, selected_version);
@@ -873,6 +626,24 @@ void AIAssetInfoControl::_on_history_item_selected(int p_index) {
 		viewed_version = selected_version;
 		_populate_from_version(ver_meta);
 		_set_editing_enabled(false);
+
+		// Load version image into the existing inspector preview
+		if (preview) {
+			TextureRect *display = preview->get_texture_display();
+			// Save original texture on first switch
+			if (original_preview_texture.is_null()) {
+				original_preview_texture = display->get_texture();
+			}
+			String ver_file = AIAssetMetadata::get_version_file_path(asset_path, selected_version);
+			String global_ver_file = ProjectSettings::get_singleton()->globalize_path(ver_file);
+			Ref<Image> img;
+			img.instantiate();
+			if (img->load(global_ver_file) == OK) {
+				Ref<ImageTexture> tex = ImageTexture::create_from_image(img);
+				display->set_texture(tex);
+				preview->_update_texture_display_ratio();
+			}
+		}
 	}
 }
 
@@ -918,26 +689,11 @@ void AIAssetInfoControl::_on_delete_version_pressed() {
 // ── Getters ──────────────────────────────────────────────────────────────
 
 String AIAssetInfoControl::get_prompt() const {
-	return prompt_edit->get_text().strip_edges();
+	return metadata.get(AIAssetMetadata::KEY_PROMPT, "");
 }
 
 String AIAssetInfoControl::get_negative_prompt() const {
-	return negative_prompt_edit->get_text().strip_edges();
-}
-
-String AIAssetInfoControl::get_selected_model() const {
-	if (model_selector->get_selected() >= 0) {
-		Variant meta = model_selector->get_item_metadata(model_selector->get_selected());
-		if (meta.get_type() == Variant::STRING) {
-			return meta;
-		}
-		return model_selector->get_item_text(model_selector->get_selected());
-	}
-	return "";
-}
-
-int AIAssetInfoControl::get_seed() const {
-	return (int)seed_spinbox->get_value();
+	return metadata.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, "");
 }
 
 AIAssetInfoControl::AIAssetInfoControl() {

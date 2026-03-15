@@ -30,6 +30,7 @@
 
 #include "editor_dock_manager.h"
 
+#include "core/version.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
@@ -406,7 +407,7 @@ void EditorDockManager::_open_dock_in_window(EditorDock *p_dock, bool p_show_win
 	Point2 dock_screen_pos = p_dock->get_screen_position();
 
 	WindowWrapper *wrapper = memnew(WindowWrapper);
-	wrapper->set_window_title(vformat(TTR("%s - Godot Engine"), TTR(p_dock->get_display_title())));
+	wrapper->set_window_title(vformat(TTR("%s - " GODOT_VERSION_NAME), TTR(p_dock->get_display_title())));
 	wrapper->set_margins_enabled(true);
 
 	EditorNode::get_singleton()->get_gui_base()->add_child(wrapper);
@@ -675,7 +676,7 @@ void EditorDockManager::save_docks_to_config(Ref<ConfigFile> p_layout, const Str
 		}
 
 		const String name = dock->get_effective_layout_key();
-		if (!dock->is_open && !dock->transient) {
+		if (!dock->is_open && !dock->transient && dock->closable) {
 			closed_docks_dump.push_back(name);
 		}
 
@@ -750,7 +751,7 @@ void EditorDockManager::load_docks_from_config(Ref<ConfigFile> p_layout, const S
 				_restore_dock_to_saved_window(dock, floating_docks_dump[name]);
 			} else if (i >= 0 && !(dock->transient && !dock->is_open)) {
 				// Safe to include transient open docks here because they won't be in the closed dock dump.
-				if (closed_docks.has(name)) {
+				if (closed_docks.has(name) && dock->closable) {
 					dock->is_open = false;
 					dock->hide();
 					_move_dock(dock, closed_dock_parent);

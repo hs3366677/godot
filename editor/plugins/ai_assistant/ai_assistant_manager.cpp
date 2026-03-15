@@ -65,8 +65,8 @@ AIAssistantDock *AIAssistantManager::spawn_instance() {
 	AIAssistantDock *dock = memnew(AIAssistantDock);
 	dock->set_instance_id(id);
 	dock->set_create_new_session_if_none(true); // New tabs always get fresh sessions.
-	dock->set_title(vformat("AI Assistant #%d", id + 1));
-	dock->set_layout_key(vformat("AI Assistant #%d", id + 1));
+	dock->set_title(vformat("AI #%d", id + 1));
+	dock->set_layout_key(vformat("AI #%d", id + 1));
 
 	InstanceInfo info;
 	info.instance_id = id;
@@ -143,60 +143,6 @@ String AIAssistantManager::build_project_context() const {
 		}
 	}
 
-	// ── Append available skills ──
-	String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
-	String skills_dir = exe_dir.path_join("..").path_join("..").path_join("docs").path_join("skills").simplify_path();
-
-	Ref<DirAccess> dir = DirAccess::open(skills_dir);
-	if (dir.is_valid()) {
-		Vector<String> skill_entries;
-		dir->list_dir_begin();
-		String entry = dir->get_next();
-		while (!entry.is_empty()) {
-			if (dir->current_is_dir() && entry != "." && entry != "..") {
-				String skill_path = skills_dir.path_join(entry).path_join("SKILL.md");
-				Ref<FileAccess> f = FileAccess::open(skill_path, FileAccess::READ);
-				if (f.is_valid()) {
-					String raw = f->get_as_text();
-					// Parse description from frontmatter
-					String desc = entry;
-					if (raw.begins_with("---")) {
-						int end_idx = raw.find("---", 3);
-						if (end_idx >= 0) {
-							String frontmatter = raw.substr(3, end_idx - 3);
-							PackedStringArray lines = frontmatter.split("\n");
-							for (int i = 0; i < lines.size(); i++) {
-								String line = lines[i].strip_edges();
-								if (line.begins_with("description:")) {
-									desc = line.substr(12).strip_edges();
-									break;
-								}
-							}
-						}
-					}
-					skill_entries.push_back("- /" + entry + ": " + desc);
-				}
-			}
-			entry = dir->get_next();
-		}
-		dir->list_dir_end();
-
-		if (skill_entries.size() > 0) {
-			context += "[AVAILABLE SKILLS]\n";
-			context += "The user can invoke these workflows via slash commands, or you can auto-detect\n";
-			context += "when the user's request matches a skill and follow it automatically.\n\n";
-			for (int i = 0; i < skill_entries.size(); i++) {
-				context += skill_entries[i] + "\n";
-			}
-			context += "\n";
-
-			if (!has_worldbuilding) {
-				context += "This is a new/empty project. If the user asks to create a game,\n";
-				context += "follow the /create-game skill workflow automatically.\n";
-			}
-		}
-	}
-
 	return context;
 }
 
@@ -253,8 +199,8 @@ void AIAssistantManager::restore_state() {
 
 		AIAssistantDock *dock = memnew(AIAssistantDock);
 		dock->set_instance_id(id);
-		dock->set_title(vformat("AI Assistant #%d", id + 1));
-		dock->set_layout_key(vformat("AI Assistant #%d", id + 1));
+		dock->set_title(vformat("AI #%d", id + 1));
+		dock->set_layout_key(vformat("AI #%d", id + 1));
 		if (!sess.is_empty()) {
 			dock->set_initial_session_id(sess);
 		}

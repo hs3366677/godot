@@ -67,7 +67,6 @@ private:
 
 protected:
 	void _notification(int p_what);
-	void _update_texture_display_ratio();
 
 	void on_selected_channels_changed();
 
@@ -75,6 +74,7 @@ public:
 	static void init_shaders();
 	static void finish_shaders();
 
+	void _update_texture_display_ratio();
 	TextureRect *get_texture_display();
 	TexturePreview(Ref<Texture2D> p_texture, bool p_show_metadata);
 };

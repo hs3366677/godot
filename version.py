@@ -1,9 +1,9 @@
-short_name = "godot"
-name = "Godot Engine"
-major = 4
-minor = 6
+short_name = "redblue"
+name = "RedBlue"
+major = 0
+minor = 1
 patch = 0
-status = "rc"
+status = "alpha"
 module_config = ""
 website = "https://godotengine.org"
 docs = "latest"

@@ -30,6 +30,7 @@
 
 #include "game_view_plugin.h"
 
+#include "core/version.h"
 #include "core/config/project_settings.h"
 #include "core/debugger/debugger_marshalls.h"
 #include "core/debugger/engine_debugger.h"
@@ -40,6 +41,7 @@
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
+#include "editor/plugins/ai_assistant/ai_assistant_dock.h"
 #include "editor/gui/editor_bottom_panel.h"
 #include "editor/gui/window_wrapper.h"
 #include "editor/run/editor_run_bar.h"
@@ -109,6 +111,11 @@ void GameViewDebugger::_session_started(Ref<EditorDebuggerSession> p_session) {
 	Dictionary shortcut_settings;
 	shortcut_settings["editor/suspend_resume_embedded_project"] = DebuggerMarshalls::serialize_key_shortcut(ED_GET_SHORTCUT("editor/suspend_resume_embedded_project"));
 	shortcut_settings["editor/next_frame_embedded_project"] = DebuggerMarshalls::serialize_key_shortcut(ED_GET_SHORTCUT("editor/next_frame_embedded_project"));
+	// AI Assistant GIF recording toggle (Alt+G)
+	Ref<Shortcut> gif_shortcut = ED_GET_SHORTCUT("ai_assistant/toggle_gif_recording");
+	if (gif_shortcut.is_valid()) {
+		shortcut_settings["ai_assistant/toggle_gif_recording"] = DebuggerMarshalls::serialize_key_shortcut(gif_shortcut);
+	}
 
 	p_session->send_message("scene:setup_embedded_shortcuts", { shortcut_settings });
 
@@ -591,6 +598,13 @@ void GameView::_handle_shortcut_requested(int p_embed_action) {
 		} break;
 		case ScriptEditorDebugger::EMBED_NEXT_FRAME: {
 			debugger->next_frame();
+		} break;
+		case ScriptEditorDebugger::EMBED_AI_TOGGLE_GIF: {
+			// Forward to AI Assistant dock
+			AIAssistantDock *aa = AIAssistantDock::get_singleton();
+			if (aa) {
+				aa->toggle_gif_recording();
+			}
 		} break;
 	}
 }
@@ -1525,7 +1539,7 @@ void GameViewPluginBase::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_TRANSLATION_CHANGED: {
 #ifndef ANDROID_ENABLED
-			window_wrapper->set_window_title(vformat(TTR("%s - Godot Engine"), TTR("Game Workspace")));
+			window_wrapper->set_window_title(vformat(TTR("%s - " GODOT_VERSION_NAME), TTR("Game Workspace")));
 #endif
 		} break;
 		case NOTIFICATION_ENTER_TREE: {

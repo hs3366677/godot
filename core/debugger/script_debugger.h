@@ -39,7 +39,7 @@ class ScriptDebugger {
 	typedef ScriptLanguage::StackInfo StackInfo;
 
 	bool skip_breakpoints = false;
-	bool ignore_error_breaks = false;
+	bool ignore_error_breaks = true;
 
 	HashMap<int, HashSet<StringName>> breakpoints;
 
