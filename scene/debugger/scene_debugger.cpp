@@ -140,6 +140,13 @@ void SceneDebugger::_handle_embed_input(const Ref<InputEvent> &p_event, const Di
 		EngineDebugger::get_singleton()->send_message("request_embed_suspend_toggle", Array());
 		return;
 	}
+
+	// AI Assistant GIF recording toggle
+	p_shortcut = p_settings.get("ai_assistant/toggle_gif_recording", Ref<Shortcut>());
+	if (p_shortcut.is_valid() && p_shortcut->matches_event(k)) {
+		EngineDebugger::get_singleton()->send_message("request_ai_toggle_gif_recording", Array());
+		return;
+	}
 }
 
 Error SceneDebugger::_msg_setup_scene(const Array &p_args) {

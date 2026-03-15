@@ -8,6 +8,7 @@
 
 #include "art_director_dock.h"
 
+#include "core/input/input_event.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
@@ -31,17 +32,14 @@ void ArtDirectorPanel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_profile_completed"), &ArtDirectorPanel::_on_profile_completed);
 	ClassDB::bind_method(D_METHOD("_on_images_completed"), &ArtDirectorPanel::_on_images_completed);
 	ClassDB::bind_method(D_METHOD("_on_models_completed"), &ArtDirectorPanel::_on_models_completed);
-	ClassDB::bind_method(D_METHOD("_on_set_ref_completed"), &ArtDirectorPanel::_on_set_ref_completed);
 	ClassDB::bind_method(D_METHOD("_on_gallery_refresh_timeout"), &ArtDirectorPanel::_on_gallery_refresh_timeout);
 	ClassDB::bind_method(D_METHOD("_on_open_image_pressed", "abs_path"), &ArtDirectorPanel::_on_open_image_pressed);
-	ClassDB::bind_method(D_METHOD("_on_set_reference_pressed"), &ArtDirectorPanel::_on_set_reference_pressed);
 	ClassDB::bind_method(D_METHOD("_on_exploration_refresh_pressed"), &ArtDirectorPanel::_on_exploration_refresh_pressed);
 	ClassDB::bind_method(D_METHOD("_on_cornerstone_refresh_pressed"), &ArtDirectorPanel::_on_cornerstone_refresh_pressed);
 }
 
 void ArtDirectorPanel::_notification(int p_what) {
 	if (p_what == NOTIFICATION_READY) {
-		// Load initial data
 		_refresh_profile();
 		_refresh_images();
 		_refresh_models();
@@ -52,7 +50,6 @@ void ArtDirectorPanel::_notification(int p_what) {
 // ── UI Setup ──────────────────────────────────────────────────────────────────
 
 void ArtDirectorPanel::_setup_ui() {
-	// Root: margin + two-column HBox
 	MarginContainer *margin = memnew(MarginContainer);
 	margin->set_h_size_flags(SIZE_EXPAND_FILL);
 	margin->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -62,113 +59,134 @@ void ArtDirectorPanel::_setup_ui() {
 	margin->add_theme_constant_override("margin_bottom", 8);
 	add_child(margin);
 
-	ScrollContainer *left_scroll = memnew(ScrollContainer);
-	left_scroll->set_h_size_flags(SIZE_EXPAND_FILL);
-	left_scroll->set_v_size_flags(SIZE_EXPAND_FILL);
-	left_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	margin->add_child(left_scroll);
+	ScrollContainer *scroll = memnew(ScrollContainer);
+	scroll->set_h_size_flags(SIZE_EXPAND_FILL);
+	scroll->set_v_size_flags(SIZE_EXPAND_FILL);
+	scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	margin->add_child(scroll);
 
-	VBoxContainer *left_vbox = memnew(VBoxContainer);
-	left_vbox->set_h_size_flags(SIZE_EXPAND_FILL);
-	left_scroll->add_child(left_vbox);
+	VBoxContainer *vbox = memnew(VBoxContainer);
+	vbox->set_h_size_flags(SIZE_EXPAND_FILL);
+	scroll->add_child(vbox);
 
-	// ── Style Profile ────────────────────────────────────────────────────────
-	Label *profile_header = memnew(Label);
-	profile_header->set_text(TTR("Style Profile"));
-	profile_header->add_theme_color_override("font_color", Color(0.8, 0.8, 1.0));
-	left_vbox->add_child(profile_header);
+	// ── Model picker (top, global) ──────────────────────────────────────
+	HBoxContainer *model_row = memnew(HBoxContainer);
+	vbox->add_child(model_row);
 
-	profile_section = memnew(VBoxContainer);
-	left_vbox->add_child(profile_section);
+	Label *model_label = memnew(Label);
+	model_label->set_text(TTR("Model:"));
+	model_row->add_child(model_label);
 
-	profile_style_label = memnew(Label);
-	profile_style_label->set_text(TTR("Style: (not set — run godot_art_explore to begin)"));
-	profile_style_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	profile_section->add_child(profile_style_label);
+	model_picker = memnew(OptionButton);
+	model_picker->set_h_size_flags(SIZE_EXPAND_FILL);
+	model_picker->add_item(TTR("Loading..."), 0);
+	model_row->add_child(model_picker);
 
-	profile_ref_label = memnew(Label);
-	profile_ref_label->set_text(TTR("Reference: (none)"));
-	profile_ref_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	profile_section->add_child(profile_ref_label);
+	vbox->add_child(memnew(HSeparator));
 
-	left_vbox->add_child(memnew(HSeparator));
+	// ── ① Style Explorations ────────────────────────────────────────────
+	HBoxContainer *exp_header = memnew(HBoxContainer);
+	vbox->add_child(exp_header);
 
-	// ── Style Explorations ───────────────────────────────────────────────────
-	exploration_header = memnew(HBoxContainer);
-	left_vbox->add_child(exploration_header);
+	Label *exp_step = memnew(Label);
+	exp_step->set_text(String::utf8("\u2460 Style Explorations"));
+	exp_step->add_theme_color_override("font_color", Color(0.8, 0.8, 1.0));
+	exp_step->set_h_size_flags(SIZE_EXPAND_FILL);
+	exp_header->add_child(exp_step);
 
-	Label *exp_label = memnew(Label);
-	exp_label->set_text(TTR("Style Explorations"));
-	exp_label->add_theme_color_override("font_color", Color(0.8, 0.8, 1.0));
-	exp_label->set_h_size_flags(SIZE_EXPAND_FILL);
-	exploration_header->add_child(exp_label);
+	// Session navigation
+	session_prev_button = memnew(Button);
+	session_prev_button->set_text(String::utf8("\u25C0"));
+	session_prev_button->set_tooltip_text(TTR("Previous session"));
+	session_prev_button->connect("pressed", callable_mp(this, &ArtDirectorPanel::_on_session_prev_pressed));
+	exp_header->add_child(session_prev_button);
+
+	session_label = memnew(Label);
+	session_label->set_text("0/0");
+	session_label->set_custom_minimum_size(Size2(48, 0));
+	session_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	exp_header->add_child(session_label);
+
+	session_next_button = memnew(Button);
+	session_next_button->set_text(String::utf8("\u25B6"));
+	session_next_button->set_tooltip_text(TTR("Next session"));
+	session_next_button->connect("pressed", callable_mp(this, &ArtDirectorPanel::_on_session_next_pressed));
+	exp_header->add_child(session_next_button);
 
 	exploration_refresh_button = memnew(Button);
-	exploration_refresh_button->set_text(TTR("Refresh"));
+	exploration_refresh_button->set_text(String::utf8("\u27F3"));
+	exploration_refresh_button->set_tooltip_text(TTR("Refresh"));
 	exploration_refresh_button->connect("pressed", callable_mp(this, &ArtDirectorPanel::_on_exploration_refresh_pressed));
-	exploration_header->add_child(exploration_refresh_button);
-
-	// Exploration model picker row
-	HBoxContainer *exp_model_row = memnew(HBoxContainer);
-	left_vbox->add_child(exp_model_row);
-
-	Label *exp_model_label = memnew(Label);
-	exp_model_label->set_text(TTR("Explore model:"));
-	exp_model_row->add_child(exp_model_label);
-
-	exploration_model_picker = memnew(OptionButton);
-	exploration_model_picker->set_h_size_flags(SIZE_EXPAND_FILL);
-	exploration_model_picker->add_item(TTR("Loading..."), 0);
-	exp_model_row->add_child(exploration_model_picker);
+	exp_header->add_child(exploration_refresh_button);
 
 	ScrollContainer *exp_scroll = memnew(ScrollContainer);
 	exp_scroll->set_custom_minimum_size(Size2(0, THUMB_SIZE + 32));
 	exp_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	left_vbox->add_child(exp_scroll);
+	vbox->add_child(exp_scroll);
 
 	exploration_gallery = memnew(HBoxContainer);
 	exploration_gallery->set_h_size_flags(SIZE_EXPAND_FILL);
 	exp_scroll->add_child(exploration_gallery);
 
-	exploration_set_ref_button = memnew(Button);
-	exploration_set_ref_button->set_text(TTR("★ Set as Reference"));
-	exploration_set_ref_button->set_disabled(true);
-	exploration_set_ref_button->connect("pressed", callable_mp(this, &ArtDirectorPanel::_on_set_reference_pressed));
-	left_vbox->add_child(exploration_set_ref_button);
+	vbox->add_child(memnew(HSeparator));
 
-	left_vbox->add_child(memnew(HSeparator));
+	// ── ② Selected Style ────────────────────────────────────────────────
+	Label *style_step = memnew(Label);
+	style_step->set_text(String::utf8("\u2461 Selected Style"));
+	style_step->add_theme_color_override("font_color", Color(0.8, 0.8, 1.0));
+	vbox->add_child(style_step);
 
-	// ── Cornerstone Assets ───────────────────────────────────────────────────
-	cornerstone_header = memnew(HBoxContainer);
-	left_vbox->add_child(cornerstone_header);
+	HBoxContainer *style_row = memnew(HBoxContainer);
+	vbox->add_child(style_row);
 
-	Label *corner_label = memnew(Label);
-	corner_label->set_text(TTR("Cornerstone Assets"));
-	corner_label->add_theme_color_override("font_color", Color(0.8, 0.8, 1.0));
-	corner_label->set_h_size_flags(SIZE_EXPAND_FILL);
-	cornerstone_header->add_child(corner_label);
+	selected_style_thumb = memnew(TextureRect);
+	selected_style_thumb->set_custom_minimum_size(Size2(THUMB_SIZE, THUMB_SIZE));
+	selected_style_thumb->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	selected_style_thumb->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+	style_row->add_child(selected_style_thumb);
+
+	VBoxContainer *style_info = memnew(VBoxContainer);
+	style_info->set_h_size_flags(SIZE_EXPAND_FILL);
+	style_row->add_child(style_info);
+
+	selected_style_label = memnew(Label);
+	selected_style_label->set_text(TTR("Style: (not set - run godot_art_explore to begin)"));
+	selected_style_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	style_info->add_child(selected_style_label);
+
+	selected_ref_label = memnew(Label);
+	selected_ref_label->set_text(TTR("Reference: (none)"));
+	selected_ref_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	style_info->add_child(selected_ref_label);
+
+	vbox->add_child(memnew(HSeparator));
+
+	// ── ③ Cornerstone Assets ────────────────────────────────────────────
+	HBoxContainer *corner_header = memnew(HBoxContainer);
+	vbox->add_child(corner_header);
+
+	Label *corner_step = memnew(Label);
+	corner_step->set_text(String::utf8("\u2462 Cornerstone Assets"));
+	corner_step->add_theme_color_override("font_color", Color(0.8, 0.8, 1.0));
+	corner_step->set_h_size_flags(SIZE_EXPAND_FILL);
+	corner_header->add_child(corner_step);
 
 	cornerstone_refresh_button = memnew(Button);
-	cornerstone_refresh_button->set_text(TTR("Refresh"));
+	cornerstone_refresh_button->set_text(String::utf8("\u27F3"));
+	cornerstone_refresh_button->set_tooltip_text(TTR("Refresh"));
 	cornerstone_refresh_button->connect("pressed", callable_mp(this, &ArtDirectorPanel::_on_cornerstone_refresh_pressed));
-	cornerstone_header->add_child(cornerstone_refresh_button);
+	corner_header->add_child(cornerstone_refresh_button);
 
 	ScrollContainer *corner_scroll = memnew(ScrollContainer);
 	corner_scroll->set_custom_minimum_size(Size2(0, THUMB_SIZE + 32));
 	corner_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	left_vbox->add_child(corner_scroll);
+	vbox->add_child(corner_scroll);
 
 	cornerstone_gallery = memnew(HBoxContainer);
 	cornerstone_gallery->set_h_size_flags(SIZE_EXPAND_FILL);
 	corner_scroll->add_child(cornerstone_gallery);
 
-	cornerstone_set_ref_button = memnew(Button);
-	cornerstone_set_ref_button->set_text(TTR("★ Set as Reference"));
-	cornerstone_set_ref_button->set_disabled(true);
-	cornerstone_set_ref_button->connect("pressed", callable_mp(this, &ArtDirectorPanel::_on_set_reference_pressed));
-	left_vbox->add_child(cornerstone_set_ref_button);
-
-	// ── HTTP infrastructure ──────────────────────────────────────────────────
+	// ── HTTP infrastructure ──────────────────────────────────────────────
 	profile_http_request = memnew(HTTPRequest);
 	add_child(profile_http_request);
 	profile_http_request->connect("request_completed", callable_mp(this, &ArtDirectorPanel::_on_profile_completed));
@@ -181,11 +199,6 @@ void ArtDirectorPanel::_setup_ui() {
 	add_child(models_http_request);
 	models_http_request->connect("request_completed", callable_mp(this, &ArtDirectorPanel::_on_models_completed));
 
-	set_ref_http_request = memnew(HTTPRequest);
-	add_child(set_ref_http_request);
-	set_ref_http_request->connect("request_completed", callable_mp(this, &ArtDirectorPanel::_on_set_ref_completed));
-
-	// Periodically refresh the gallery so new images appear automatically.
 	gallery_refresh_timer = memnew(Timer);
 	gallery_refresh_timer->set_wait_time(5.0);
 	gallery_refresh_timer->connect("timeout", callable_mp(this, &ArtDirectorPanel::_on_gallery_refresh_timeout));
@@ -233,10 +246,8 @@ void ArtDirectorPanel::_refresh_models() {
 }
 
 void ArtDirectorPanel::_populate_model_picker(OptionButton *p_picker, const String &p_default_id) {
-	// Find current selection to preserve it
 	String current = p_picker->get_item_count() > 0 ? p_picker->get_item_text(p_picker->get_selected()) : "";
 
-	// Model list is populated by _on_models_completed; this just sets the default if no selection
 	if (current.is_empty() || current == TTR("Loading...")) {
 		for (int i = 0; i < p_picker->get_item_count(); i++) {
 			if (p_picker->get_item_metadata(i) == p_default_id) {
@@ -244,7 +255,6 @@ void ArtDirectorPanel::_populate_model_picker(OptionButton *p_picker, const Stri
 				return;
 			}
 		}
-		// Fallback: select first
 		if (p_picker->get_item_count() > 0) {
 			p_picker->select(0);
 		}
@@ -252,10 +262,10 @@ void ArtDirectorPanel::_populate_model_picker(OptionButton *p_picker, const Stri
 }
 
 String ArtDirectorPanel::get_exploration_model() const {
-	if (!exploration_model_picker || exploration_model_picker->get_item_count() == 0) {
+	if (!model_picker || model_picker->get_item_count() == 0) {
 		return "flux-schnell";
 	}
-	Variant meta = exploration_model_picker->get_item_metadata(exploration_model_picker->get_selected());
+	Variant meta = model_picker->get_item_metadata(model_picker->get_selected());
 	return meta.get_type() == Variant::STRING ? String(meta) : "flux-schnell";
 }
 
@@ -264,7 +274,18 @@ void ArtDirectorPanel::_load_thumbnail(const String &p_abs_path, ThumbInfo &r_in
 	if (img.is_null()) {
 		return;
 	}
-	img->resize(THUMB_SIZE, THUMB_SIZE, Image::INTERPOLATE_BILINEAR);
+	// Preserve aspect ratio: fit within THUMB_SIZE box
+	int orig_w = img->get_width();
+	int orig_h = img->get_height();
+	int new_w, new_h;
+	if (orig_w >= orig_h) {
+		new_w = THUMB_SIZE;
+		new_h = MAX(1, orig_h * THUMB_SIZE / orig_w);
+	} else {
+		new_h = THUMB_SIZE;
+		new_w = MAX(1, orig_w * THUMB_SIZE / orig_h);
+	}
+	img->resize(new_w, new_h, Image::INTERPOLATE_BILINEAR);
 	Ref<ImageTexture> tex = ImageTexture::create_from_image(img);
 	r_info.texture = tex;
 }
@@ -287,45 +308,77 @@ void ArtDirectorPanel::_rebuild_gallery(HBoxContainer *p_gallery, const Vector<T
 		const ThumbInfo &info = p_thumbs[i];
 		String abs_path = _abs_path_from_res(info.res_path);
 
-		VBoxContainer *vbox = memnew(VBoxContainer);
-		p_gallery->add_child(vbox);
+		VBoxContainer *item_vbox = memnew(VBoxContainer);
+		p_gallery->add_child(item_vbox);
 
-		Button *thumb_btn = memnew(Button);
-		thumb_btn->set_custom_minimum_size(Size2(THUMB_SIZE, THUMB_SIZE));
-		thumb_btn->set_flat(false);
+		// Use TextureRect for proper aspect-ratio display
+		TextureRect *thumb_rect = memnew(TextureRect);
+		thumb_rect->set_custom_minimum_size(Size2(THUMB_SIZE, THUMB_SIZE));
+		thumb_rect->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+		thumb_rect->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 		if (info.texture.is_valid()) {
-			thumb_btn->set_button_icon(info.texture);
-			thumb_btn->set_icon_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+			thumb_rect->set_texture(info.texture);
 		}
-		// Tooltip: show full description on hover, fall back to generic hint
 		String tip = info.tooltip.is_empty()
-			? TTR("Click to select  •  Double-click to open")
-			: info.tooltip + "\n\n" + TTR("Click to select  •  Double-click to open");
-		thumb_btn->set_tooltip_text(tip);
+			? TTR("Double-click to open in viewer")
+			: info.tooltip + "\n\n" + TTR("Double-click to open in viewer");
+		thumb_rect->set_tooltip_text(tip);
+		thumb_rect->set_mouse_filter(Control::MOUSE_FILTER_STOP);
 
-		thumb_btn->set_meta("category", p_category);
-		thumb_btn->set_meta("index", i);
-		thumb_btn->connect("pressed", callable_mp(this, p_category == "exploration"
-			? &ArtDirectorPanel::_on_exploration_thumb_pressed
-			: &ArtDirectorPanel::_on_cornerstone_thumb_pressed).bind(i));
-		vbox->add_child(thumb_btn);
+		// Store abs_path for double-click open
+		thumb_rect->set_meta("abs_path", abs_path);
+		thumb_rect->connect("gui_input", callable_mp(this, &ArtDirectorPanel::_on_thumb_gui_input).bind(abs_path));
+		item_vbox->add_child(thumb_rect);
 
-		Label *name_lbl = memnew(Label);
-		String display_name = info.label.is_empty() ? info.res_path.get_file().get_basename() : info.label;
-		name_lbl->set_text(display_name);
-		name_lbl->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-		name_lbl->set_custom_minimum_size(Size2(THUMB_SIZE, 0));
-		name_lbl->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-		name_lbl->set_tooltip_text(tip);
-		vbox->add_child(name_lbl);
+		// Number label under each thumb
+		Label *num_lbl = memnew(Label);
+		num_lbl->set_text(String::num_int64(i + 1));
+		num_lbl->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		num_lbl->set_custom_minimum_size(Size2(THUMB_SIZE, 0));
+		num_lbl->set_tooltip_text(tip);
+		item_vbox->add_child(num_lbl);
 	}
+}
+
+void ArtDirectorPanel::_rebuild_exploration_gallery() {
+	if (exploration_sessions.is_empty()) {
+		session_label->set_text("0/0");
+		session_prev_button->set_disabled(true);
+		session_next_button->set_disabled(true);
+
+		// Clear gallery
+		while (exploration_gallery->get_child_count() > 0) {
+			Node *child = exploration_gallery->get_child(0);
+			exploration_gallery->remove_child(child);
+			child->queue_free();
+		}
+		Label *empty_lbl = memnew(Label);
+		empty_lbl->set_text(TTR("(none)"));
+		exploration_gallery->add_child(empty_lbl);
+		return;
+	}
+
+	// Clamp index
+	if (current_session_index < 0) {
+		current_session_index = 0;
+	}
+	if (current_session_index >= exploration_sessions.size()) {
+		current_session_index = exploration_sessions.size() - 1;
+	}
+
+	session_label->set_text(String::num_int64(current_session_index + 1) + "/" + String::num_int64(exploration_sessions.size()));
+	session_prev_button->set_disabled(current_session_index <= 0);
+	session_next_button->set_disabled(current_session_index >= exploration_sessions.size() - 1);
+
+	const SessionInfo &session = exploration_sessions[current_session_index];
+	_rebuild_gallery(exploration_gallery, session.images, "exploration");
 }
 
 // ── HTTP callbacks ─────────────────────────────────────────────────────────────
 
 void ArtDirectorPanel::_on_profile_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		profile_style_label->set_text(TTR("Style: (server not available)"));
+		selected_style_label->set_text(TTR("Style: (server not available)"));
 		return;
 	}
 
@@ -337,8 +390,9 @@ void ArtDirectorPanel::_on_profile_completed(int p_result, int p_code, const Pac
 
 	Dictionary data = json.get_data();
 	if (!data.has("profile") || data["profile"].get_type() == Variant::NIL) {
-		profile_style_label->set_text(TTR("Style: (not set — run godot_art_explore to begin)"));
-		profile_ref_label->set_text(TTR("Reference: (none)"));
+		selected_style_label->set_text(TTR("Style: (not set - run godot_art_explore to begin)"));
+		selected_ref_label->set_text(TTR("Reference: (none)"));
+		selected_style_thumb->set_texture(Ref<Texture2D>());
 		return;
 	}
 
@@ -346,8 +400,23 @@ void ArtDirectorPanel::_on_profile_completed(int p_result, int p_code, const Pac
 	String art_direction = profile.get("art_direction", "");
 	String reference_asset = profile.get("reference_asset", "");
 
-	profile_style_label->set_text(TTR("Style: ") + (art_direction.is_empty() ? "(empty)" : art_direction));
-	profile_ref_label->set_text(TTR("Reference: ") + (reference_asset.is_empty() ? "(none)" : reference_asset));
+	selected_style_label->set_text(TTR("Style: ") + (art_direction.is_empty() ? "(empty)" : art_direction));
+	selected_ref_label->set_text(TTR("Ref: ") + (reference_asset.is_empty() ? "(none)" : reference_asset));
+
+	// Load reference image thumbnail
+	if (!reference_asset.is_empty()) {
+		String abs_path = _abs_path_from_res(reference_asset);
+		Ref<Image> img = Image::load_from_file(abs_path);
+		if (img.is_valid()) {
+			img->resize(THUMB_SIZE, THUMB_SIZE, Image::INTERPOLATE_BILINEAR);
+			Ref<ImageTexture> tex = ImageTexture::create_from_image(img);
+			selected_style_thumb->set_texture(tex);
+		} else {
+			selected_style_thumb->set_texture(Ref<Texture2D>());
+		}
+	} else {
+		selected_style_thumb->set_texture(Ref<Texture2D>());
+	}
 }
 
 void ArtDirectorPanel::_on_images_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
@@ -363,56 +432,102 @@ void ArtDirectorPanel::_on_images_completed(int p_result, int p_code, const Pack
 	}
 
 	Dictionary data = json.get_data();
-	Array images = data.get("images", Array());
 
-	exploration_thumbs.clear();
+	// Parse sessions-based response
 	cornerstone_thumbs.clear();
+	exploration_sessions.clear();
 
-	for (int i = 0; i < images.size(); i++) {
-		Dictionary img_info = images[i];
-		String category = img_info.get("category", "");
-		String res_path = img_info.get("resPath", "");
-		String abs_path = img_info.get("absPath", "");
+	if (data.has("sessions")) {
+		Array sessions = data.get("sessions", Array());
+		for (int s = 0; s < sessions.size(); s++) {
+			Dictionary sess = sessions[s];
+			SessionInfo si;
+			si.id = sess.get("id", "");
+			Array images = sess.get("images", Array());
+			for (int i = 0; i < images.size(); i++) {
+				Dictionary img_info = images[i];
+				ThumbInfo info;
+				info.res_path = img_info.get("resPath", "");
+				info.category = "exploration";
+				info.label = img_info.get("label", "");
+				info.tooltip = img_info.get("tooltip", "");
+				_load_thumbnail(String(img_info.get("absPath", "")), info);
+				si.images.push_back(info);
+			}
+			if (!si.images.is_empty()) {
+				exploration_sessions.push_back(si);
+			}
+		}
+	} else if (data.has("images")) {
+		// Legacy flat response — put all explorations into one session
+		Array images = data.get("images", Array());
+		SessionInfo default_session;
+		default_session.id = "default";
+		for (int i = 0; i < images.size(); i++) {
+			Dictionary img_info = images[i];
+			String category = img_info.get("category", "");
+			ThumbInfo info;
+			info.res_path = img_info.get("resPath", "");
+			info.category = category;
+			info.label = img_info.get("label", "");
+			info.tooltip = img_info.get("tooltip", "");
+			_load_thumbnail(String(img_info.get("absPath", "")), info);
 
-		ThumbInfo info;
-		info.res_path = res_path;
-		info.category = category;
-		info.label = img_info.get("label", "");
-		info.tooltip = img_info.get("tooltip", "");
-		_load_thumbnail(abs_path, info);
+			if (category == "exploration") {
+				default_session.images.push_back(info);
+			} else if (category == "cornerstone") {
+				cornerstone_thumbs.push_back(info);
+			}
+		}
+		if (!default_session.images.is_empty()) {
+			exploration_sessions.push_back(default_session);
+		}
+	}
 
-		if (category == "exploration") {
-			exploration_thumbs.push_back(info);
-		} else if (category == "cornerstone") {
+	// Parse cornerstone from sessions response
+	if (data.has("cornerstone")) {
+		Array corner = data.get("cornerstone", Array());
+		for (int i = 0; i < corner.size(); i++) {
+			Dictionary img_info = corner[i];
+			ThumbInfo info;
+			info.res_path = img_info.get("resPath", "");
+			info.category = "cornerstone";
+			info.label = img_info.get("label", "");
+			info.tooltip = img_info.get("tooltip", "");
+			_load_thumbnail(String(img_info.get("absPath", "")), info);
 			cornerstone_thumbs.push_back(info);
 		}
 	}
 
-	_rebuild_gallery(exploration_gallery, exploration_thumbs, "exploration");
+	// Default to newest session (index 0, since sorted newest first)
+	if (!exploration_sessions.is_empty() && current_session_index >= exploration_sessions.size()) {
+		current_session_index = 0;
+	}
+
+	_rebuild_exploration_gallery();
 	_rebuild_gallery(cornerstone_gallery, cornerstone_thumbs, "cornerstone");
 }
 
 void ArtDirectorPanel::_on_models_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		// Server not ready — populate with known static list as fallback
 		struct ModelEntry { const char *id; const char *label; };
 		static const ModelEntry FALLBACK_MODELS[] = {
-			{ "nano-banana-2",       "nano-banana-2 ($0.067) — fast, pro-level" },
-			{ "flux-2-dev",          "flux-2-dev ($0.012) — FLUX.2 open-source" },
-			{ "flux-2-pro",          "flux-2-pro ($0.015) — FLUX.2 flagship" },
-			{ "flux-schnell",        "flux-schnell ($0.003) — fastest" },
-			{ "flux-kontext-pro",    "flux-kontext-pro ($0.04) — style consistent" },
-			{ "flux-kontext-max",    "flux-kontext-max ($0.06) — best quality" },
+			{ "nano-banana-2",       "nano-banana-2 ($0.067) - fast, pro-level" },
+			{ "flux-2-dev",          "flux-2-dev ($0.012) - FLUX.2 open-source" },
+			{ "flux-2-pro",          "flux-2-pro ($0.015) - FLUX.2 flagship" },
+			{ "flux-schnell",        "flux-schnell ($0.003) - fastest" },
+			{ "flux-kontext-pro",    "flux-kontext-pro ($0.04) - style consistent" },
+			{ "flux-kontext-max",    "flux-kontext-max ($0.06) - best quality" },
 			{ "sd-3.5-medium",       "sd-3.5-medium ($0.035)" },
 			{ "sd-3.5-large-turbo",  "sd-3.5-large-turbo ($0.04)" },
 			{ "sdxl",                "sdxl ($0.0055)" },
 		};
-		exploration_model_picker->clear();
+		model_picker->clear();
 		for (const ModelEntry &m : FALLBACK_MODELS) {
-			exploration_model_picker->add_item(m.label);
-			exploration_model_picker->set_item_metadata(exploration_model_picker->get_item_count() - 1, String(m.id));
+			model_picker->add_item(m.label);
+			model_picker->set_item_metadata(model_picker->get_item_count() - 1, String(m.id));
 		}
-		_populate_model_picker(exploration_model_picker, "nano-banana-2");
+		_populate_model_picker(model_picker, "nano-banana-2");
 		return;
 	}
 
@@ -429,12 +544,11 @@ void ArtDirectorPanel::_on_models_completed(int p_result, int p_code, const Pack
 		return;
 	}
 
-	exploration_model_picker->clear();
+	model_picker->clear();
 
 	for (int i = 0; i < models.size(); i++) {
 		Dictionary m = models[i];
 		String id = m.get("id", "");
-		String name = m.get("name", id);
 		String cost_str = "";
 		if (m.has("pricing")) {
 			Dictionary pricing = m["pricing"];
@@ -444,17 +558,11 @@ void ArtDirectorPanel::_on_models_completed(int p_result, int p_code, const Pack
 		}
 		String label = id + cost_str;
 
-		exploration_model_picker->add_item(label);
-		exploration_model_picker->set_item_metadata(exploration_model_picker->get_item_count() - 1, id);
+		model_picker->add_item(label);
+		model_picker->set_item_metadata(model_picker->get_item_count() - 1, id);
 	}
 
-	_populate_model_picker(exploration_model_picker, "flux-2-dev");
-}
-
-void ArtDirectorPanel::_on_set_ref_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	if (p_result == HTTPRequest::RESULT_SUCCESS && p_code == 200) {
-		_refresh_profile();
-	}
+	_populate_model_picker(model_picker, "flux-2-dev");
 }
 
 // ── UI callbacks ─────────────────────────────────────────────────────────────
@@ -463,67 +571,25 @@ void ArtDirectorPanel::_on_open_image_pressed(String p_abs_path) {
 	OS::get_singleton()->shell_open(p_abs_path);
 }
 
-void ArtDirectorPanel::_on_exploration_thumb_pressed(int p_index) {
-	uint64_t now = OS::get_singleton()->get_ticks_msec();
-	if (last_thumb_click_category == "exploration" && last_thumb_click_index == p_index && (now - last_thumb_click_time) < 400) {
-		// Double-click: open in OS viewer
-		if (p_index >= 0 && p_index < exploration_thumbs.size()) {
-			_on_open_image_pressed(_abs_path_from_res(exploration_thumbs[p_index].res_path));
-		}
-		last_thumb_click_time = 0;
-		return;
+void ArtDirectorPanel::_on_thumb_gui_input(const Ref<InputEvent> &p_event, String p_abs_path) {
+	Ref<InputEventMouseButton> mb = p_event;
+	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && mb->is_double_click()) {
+		_on_open_image_pressed(p_abs_path);
 	}
-	last_thumb_click_time = now;
-	last_thumb_click_category = "exploration";
-	last_thumb_click_index = p_index;
-
-	selected_exploration_index = p_index;
-	selected_cornerstone_index = -1;
-	exploration_set_ref_button->set_disabled(false);
-	cornerstone_set_ref_button->set_disabled(true);
 }
 
-void ArtDirectorPanel::_on_cornerstone_thumb_pressed(int p_index) {
-	uint64_t now = OS::get_singleton()->get_ticks_msec();
-	if (last_thumb_click_category == "cornerstone" && last_thumb_click_index == p_index && (now - last_thumb_click_time) < 400) {
-		// Double-click: open in OS viewer
-		if (p_index >= 0 && p_index < cornerstone_thumbs.size()) {
-			_on_open_image_pressed(_abs_path_from_res(cornerstone_thumbs[p_index].res_path));
-		}
-		last_thumb_click_time = 0;
-		return;
+void ArtDirectorPanel::_on_session_prev_pressed() {
+	if (current_session_index > 0) {
+		current_session_index--;
+		_rebuild_exploration_gallery();
 	}
-	last_thumb_click_time = now;
-	last_thumb_click_category = "cornerstone";
-	last_thumb_click_index = p_index;
-
-	selected_cornerstone_index = p_index;
-	selected_exploration_index = -1;
-	cornerstone_set_ref_button->set_disabled(false);
-	exploration_set_ref_button->set_disabled(true);
 }
 
-void ArtDirectorPanel::_on_set_reference_pressed() {
-	String res_path;
-
-	if (selected_exploration_index >= 0 && selected_exploration_index < exploration_thumbs.size()) {
-		res_path = exploration_thumbs[selected_exploration_index].res_path;
-	} else if (selected_cornerstone_index >= 0 && selected_cornerstone_index < cornerstone_thumbs.size()) {
-		res_path = cornerstone_thumbs[selected_cornerstone_index].res_path;
+void ArtDirectorPanel::_on_session_next_pressed() {
+	if (current_session_index < exploration_sessions.size() - 1) {
+		current_session_index++;
+		_rebuild_exploration_gallery();
 	}
-
-	if (res_path.is_empty()) {
-		return;
-	}
-
-	String project_root = _get_project_root();
-	Dictionary body_dict;
-	body_dict["reference_asset"] = res_path;
-	body_dict["directory"] = project_root;
-	String body = JSON::stringify(body_dict);
-	PackedStringArray headers;
-	headers.push_back("Content-Type: application/json");
-	set_ref_http_request->request(service_url + "/godot/art-director/set-reference", headers, HTTPClient::METHOD_POST, body);
 }
 
 void ArtDirectorPanel::_on_exploration_refresh_pressed() {
@@ -536,6 +602,7 @@ void ArtDirectorPanel::_on_cornerstone_refresh_pressed() {
 
 void ArtDirectorPanel::_on_gallery_refresh_timeout() {
 	_refresh_images();
+	_refresh_profile();
 }
 
 // =============================================================================

@@ -1611,7 +1611,11 @@ void EditorNode::_scan_external_changes() {
 	}
 
 	if (need_reload) {
-		callable_mp((Window *)disk_changed, &Window::popup_centered_ratio).call_deferred(0.3);
+		// Auto-reload without confirmation dialog (Makabaka: AI modifies scenes externally)
+		callable_mp(this, &EditorNode::_reload_modified_scenes).call_deferred();
+		if (disk_changed_project) {
+			callable_mp(this, &EditorNode::_reload_project_settings).call_deferred();
+		}
 	}
 }
 
@@ -9091,7 +9095,15 @@ EditorNode::EditorNode() {
 	// Dock numbers are based on DockSlot enum value + 1.
 	default_layout->set_value(docks_section, "dock_3", "Scene,Import");
 	default_layout->set_value(docks_section, "dock_4", "FileSystem,History");
-	default_layout->set_value(docks_section, "dock_5", "Inspector,Signals,Groups");
+	default_layout->set_value(docks_section, "dock_5", "AI #1,Inspector,Signals,Groups");
+
+	// Hide Import, History, Signals, and Groups docks by default.
+	Array closed_docks;
+	closed_docks.push_back("Import");
+	closed_docks.push_back("History");
+	closed_docks.push_back("Signals");
+	closed_docks.push_back("Groups");
+	default_layout->set_value(docks_section, "dock_closed", closed_docks);
 
 	int hsplits[] = { 0, dock_hsize, -dock_hsize, 0 };
 	for (int i = 0; i < (int)std_size(hsplits); i++) {

@@ -182,6 +182,7 @@ protected:
 
 public:
 	void add_message(const String &p_msg, MessageType p_type = MSG_TYPE_STD);
+	String get_recent_log_text(int p_max_lines = 50, int p_type_filter = -1) const;
 	void register_undo_redo(UndoRedo *p_undo_redo);
 	void deinit();
 

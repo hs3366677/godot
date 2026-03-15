@@ -251,6 +251,38 @@ void EditorLog::_copy_request() {
 	}
 }
 
+String EditorLog::get_recent_log_text(int p_max_lines, int p_type_filter) const {
+	String result;
+	int start = MAX(0, messages.size() - p_max_lines);
+	int count = 0;
+	for (int i = start; i < messages.size(); i++) {
+		if (p_type_filter >= 0 && messages[i].type != (MessageType)p_type_filter) {
+			continue;
+		}
+		String prefix;
+		switch (messages[i].type) {
+			case MSG_TYPE_ERROR:
+				prefix = "[ERROR] ";
+				break;
+			case MSG_TYPE_WARNING:
+				prefix = "[WARNING] ";
+				break;
+			case MSG_TYPE_EDITOR:
+				prefix = "[EDITOR] ";
+				break;
+			default:
+				break;
+		}
+		result += prefix + messages[i].text;
+		if (messages[i].count > 1) {
+			result += " (x" + itos(messages[i].count) + ")";
+		}
+		result += "\n";
+		count++;
+	}
+	return result;
+}
+
 void EditorLog::clear() {
 	_clear_request();
 }

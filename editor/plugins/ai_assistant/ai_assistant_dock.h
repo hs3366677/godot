@@ -21,7 +21,10 @@
 #include "scene/gui/tab_container.h"
 #include "scene/gui/text_edit.h"
 #include "scene/gui/tree.h"
+#include "scene/gui/item_list.h"
 #include "scene/gui/line_edit.h"
+#include "scene/gui/option_button.h"
+#include "scene/gui/split_container.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/popup.h"
@@ -105,21 +108,31 @@ private:
 	Button *settings_button = nullptr;
 	ColorRect *connection_indicator = nullptr;
 
-	// Settings dialog (asset provider configuration + prompt management)
+	// Settings dialog (left category list + right content pages)
 	AcceptDialog *settings_dialog = nullptr;
-	TabContainer *settings_tabs = nullptr;
+	ItemList *settings_category_list = nullptr;
+	VBoxContainer *settings_pages = nullptr;
 
-	// Providers tab
+	// Page 0: Providers
+	VBoxContainer *settings_providers_page = nullptr;
 	LineEdit *replicate_token_input = nullptr;
 	Button *replicate_test_button = nullptr;
 	Label *replicate_status_label = nullptr;
 	LineEdit *meshy_token_input = nullptr;
 	Button *meshy_test_button = nullptr;
 	Label *meshy_status_label = nullptr;
+	LineEdit *removebg_token_input = nullptr;
 	HTTPRequest *settings_http_request = nullptr;
 	String settings_testing_provider;
 
-	// Prompt tab
+	// Page 1: Texture Processing
+	VBoxContainer *settings_texture_page = nullptr;
+	OptionButton *rembg_method_selector = nullptr;
+	Label *rembg_api_info = nullptr;
+	Label *rembg_local_info = nullptr;
+
+	// Page 2: Prompt
+	VBoxContainer *settings_prompt_page = nullptr;
 	TextEdit *project_prompt_edit = nullptr;
 	Label *project_prompt_path_label = nullptr;
 	Button *generate_prompt_button = nullptr;
@@ -129,6 +142,7 @@ private:
 	// Model selector (two-level submenu: Provider → Models)
 	MenuButton *model_button = nullptr;
 	CheckButton *thinking_toggle = nullptr;
+	CheckButton *autotest_toggle = nullptr;
 	Vector<PopupMenu *> provider_submenus;
 	HTTPRequest *model_http_request = nullptr;
 	ProviderRequestType provider_request_type = PROVIDER_REQUEST_NONE;
@@ -156,6 +170,7 @@ private:
 	VBoxContainer *chat_tab = nullptr;
 	ScrollContainer *chat_scroll = nullptr;
 	VBoxContainer *chat_container = nullptr;
+	VBoxContainer *loading_overlay = nullptr; // Loading indicator shown during connection
 
 	// Collapse/expand for AI response turns
 	Vector<int> user_message_indices; // child indices in chat_container for each user message
@@ -176,6 +191,7 @@ private:
 	bool is_processing = false; // true when AI is thinking (send button becomes stop)
 	bool user_scrolled_up = false; // true when user has scrolled away from bottom
 	bool suppress_scroll_tracking = false; // true during programmatic scrolls
+	int scroll_to_bottom_frames = 0; // when > 0, force scroll to bottom each process frame
 
 	// Image attachments
 	static const int MAX_IMAGE_SIZE_BYTES = 3 * 1024 * 1024 + 800 * 1024; // ~3.8 MB raw => ~5 MB base64 (Anthropic limit)
@@ -185,7 +201,11 @@ private:
 	HBoxContainer *attachment_preview_container = nullptr;
 	Button *attach_image_button = nullptr;
 	Button *screenshot_button = nullptr;
+	Button *snip_button = nullptr;
 	EditorFileDialog *image_file_dialog = nullptr;
+
+	// Context indicator (shows selected asset/node below input)
+	Label *context_label = nullptr;
 
 	// Slash command autocomplete (inline, non-modal)
 	VBoxContainer *slash_hint_container = nullptr;
@@ -196,20 +216,8 @@ private:
 	void _on_slash_hint_pressed(int p_id);
 	void _update_slash_hint_highlight();
 
-	// Skill system
-	struct SkillInfo {
-		String name;
-		String description;
-		String auto_detect;            // Regex keywords for auto-detection from message text
-		String auto_detect_attachment; // Trigger on attachment type: "image", etc.
-		String content;                // Full SKILL.md content (after frontmatter)
-	};
-	Vector<SkillInfo> available_skills;
-	void _load_skills();
-	String _get_active_skill_content(const String &p_user_message, bool p_has_image_attachment = false) const;
-
 	// Mode flags
-	bool coding_standards_injected = false; // Reset per session
+	bool engine_prompts_injected = false; // Reset per session
 
 	// Processing indicator (overlay on prompt_input top-right)
 	Label *processing_label = nullptr;
@@ -231,18 +239,35 @@ private:
 	// Track tool UI elements by part ID for status updates
 	HashMap<String, RichTextLabel *> tool_containers;
 	HashMap<String, uint64_t> tool_start_times; // Track when each tool started
+	HashMap<String, uint64_t> tool_completed_times; // Frozen elapsed ms when tool completed
 	HashMap<String, String> tool_logged_status; // Track last-logged status per tool for log updates
 
 	// Store full input/output for click-to-view in tool detail popup
 	HashMap<String, String> tool_full_inputs;  // part_id → full input text
 	HashMap<String, String> tool_full_outputs; // part_id → full output text
+	HashMap<String, VBoxContainer *> tool_vbox_containers; // part_id → VBoxContainer (parent of label)
+	HashSet<String> tool_images_added; // part_ids that already have image thumbnails
 
 	// Separate HashMap for text streaming labels (decoupled from tool_containers)
 	HashMap<String, RichTextLabel *> text_stream_labels;
 
+	// Reasoning/thinking display (collapsible)
+	HashMap<String, RichTextLabel *> reasoning_labels;
+	HashMap<String, VBoxContainer *> reasoning_containers;
+
 	// Tool detail viewer popup
 	AcceptDialog *tool_detail_dialog = nullptr;
 	RichTextLabel *tool_detail_content = nullptr;
+
+	// Image preview popup (double-click on chat thumbnails)
+	AcceptDialog *image_preview_dialog = nullptr;
+	TextureRect *image_preview_rect = nullptr;
+	void _show_image_preview(const String &p_cache_path, const String &p_title);
+	void _on_chat_thumbnail_gui_input(const Ref<InputEvent> &p_event, const String &p_cache_path, const String &p_title);
+
+	// Image disk cache (<project>/.godot/ai_cache/images/)
+	String _get_image_cache_dir() const;
+	String _save_image_to_cache(const Vector<uint8_t> &p_data, const String &p_extension = "png");
 
 	// Logs tab
 	VBoxContainer *logs_tab = nullptr;
@@ -271,13 +296,6 @@ private:
 	String current_question_id; // Track current question being displayed
 	VBoxContainer *question_container = nullptr; // UI container for question dialog
 
-	// Auto-verification after game runs
-	bool pending_auto_verify = false;
-
-	// Debugger error monitoring
-	int last_debugger_error_count = 0;
-	Vector<String> pending_debugger_errors;
-
 	// HTTP connection to OpenCode
 	HTTPRequest *http_request = nullptr;
 	String service_url = "http://localhost:4096";
@@ -300,11 +318,13 @@ private:
 	void _create_session();
 	void _fetch_config();
 	void _send_message(const String &p_content);
-	String _load_coding_standards();
-	String _cached_coding_standards;
+	String _load_engine_prompts();
+	String _cached_engine_prompts;
 	void _on_http_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
 	// UI handlers
+	void _on_thinking_toggled(bool p_pressed);
+	void _on_autotest_toggled(bool p_pressed);
 	void _on_send_pressed();
 	void _on_stop_pressed();
 	void _on_send_or_stop_pressed();
@@ -314,13 +334,21 @@ private:
 	// Image attachment handling
 	void _on_attach_image_pressed();
 	void _on_screenshot_pressed();
+	void _on_snip_pressed();
+	void _on_snip_captured(const Ref<Image> &p_image, const Rect2 &p_rect);
+	void _on_snip_annotated(const Ref<Image> &p_image, const PackedStringArray &p_text_labels);
+	void _on_snip_cancelled();
 	void _on_image_files_selected(const PackedStringArray &p_paths);
 	void _on_files_dropped_on_dock(const PackedStringArray &p_files);
 	void _on_file_removed(const String &p_file);
+	void _on_editor_selection_changed();
+	void _on_filesystem_selection_changed();
+	void _update_context_label();
 	void _on_remove_attachment(int p_index);
 	bool _add_attachment_from_file(const String &p_path);
 	bool _add_attachment_from_clipboard_image();
 	void _rebuild_attachment_previews();
+	void _on_attachment_gui_input(const Ref<InputEvent> &p_event, const String &p_file_path);
 	void _clear_attachments();
 	String _get_mime_type_for_extension(const String &p_extension) const;
 	String _encode_data_url(const String &p_mime, const Vector<uint8_t> &p_data) const;
@@ -331,8 +359,17 @@ private:
 	void _on_meshy_test_pressed();
 	void _test_provider(const String &p_provider_id, LineEdit *p_input, Button *p_button, Label *p_status);
 	void _on_settings_save_pressed();
+	void _on_settings_category_selected(int p_index);
+	void _on_rembg_method_selected(int p_index);
 	void _on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _auto_configure_providers();
+
+	// .env.keys file helpers
+	String _get_engine_root_path() const;
+	String _get_env_keys_path() const;
+	HashMap<String, String> _read_env_keys() const;
+	void _write_env_key(const String &p_key, const String &p_value);
+	String _get_env_key(const String &p_key) const;
 
 	// Prompt management
 	String _load_project_prompt();
@@ -385,11 +422,13 @@ private:
 	void _add_ai_message(const String &p_text);
 	void _add_system_message(const String &p_text);
 	void _show_welcome_message();
+	void _update_loading_overlay(const String &p_text);
+	void _hide_loading_overlay();
 	void _add_tool_message(const String &p_part_id, const String &p_tool_name, const String &p_status, const Dictionary &p_details);
 	void _scroll_chat_to_bottom();
-	void _do_scroll_to_bottom();
 	void _clear_scroll_suppress();
 	void _toggle_turn_collapse(int p_user_msg_index);
+	void _toggle_reasoning_collapse(const String &p_key);
 	void _on_chat_scroll_changed(double p_value);
 	void _update_sticky_header();
 	void _clear_tool_tracking();
@@ -431,10 +470,31 @@ private:
 
 	// Screenshot capture (for godot_screenshot tool and 📷 button)
 	static AIAssistantDock *singleton;
-	bool _add_attachment_from_raw_data(const String &p_filename, const String &p_mime, const Vector<uint8_t> &p_data);
+	bool _add_attachment_from_raw_data(const String &p_filename, const String &p_mime, const Vector<uint8_t> &p_data, const String &p_file_path = "");
 	void _post_screenshot_result(const String &p_id, const String &p_b64);
 
-	// Eval (for godot_eval tool)
+	// GIF recording (F1 hotkey toggle)
+	Button *gif_record_button = nullptr;
+	bool gif_recording = false;
+	bool gif_record_from_tool = false; // true when triggered by godot_record tool (don't attach to input)
+	Vector<String> gif_frames; // base64 PNG frames
+	Timer *gif_frame_timer = nullptr;
+	String gif_record_id;
+	int gif_record_fps = 10;
+	int gif_max_frames = 100; // 10s at 10fps
+	void _toggle_gif_recording();
+	void _stop_gif_recording_if_active();
+	void _on_gif_frame_timer();
+	void _post_gif_result(const String &p_id, const Vector<String> &p_frames);
+	HTTPRequest *gif_post_req = nullptr;
+	void _on_gif_post_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	static void _gif_frame_screenshot_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
+	void _on_gif_frame_screenshot(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
+
+	// Logs (for godot_logs tool)
+	void _post_log_result(const String &p_id, const String &p_content, int p_line_count);
+
+	// Eval (for sim tool)
 	void _post_eval_result(const String &p_id, const String &p_value, const String &p_error = "");
 	void _on_ai_eval_return(const Array &p_data, const String &p_id);
 	static void _on_ai_eval_return_static(const Array &p_data, const String &p_id);
@@ -445,15 +505,8 @@ private:
 	static void _screenshot_for_button_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
 	static void _screenshot_for_tool_static(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect, const String &p_id);
 
-	// Auto-verification
+	// Game lifecycle
 	void _on_game_stopped();
-	void _auto_verify_game_logs();
-
-	// Debugger error monitoring
-	void _check_debugger_errors();
-	void _on_debugger_error(const String &p_file, int p_line, int p_debugger_id);
-	void _on_debugger_output(const String &p_msg, int p_type);
-	void _send_debugger_errors_to_ai();
 
 	// Pending request type
 	enum RequestType {
@@ -509,6 +562,11 @@ protected:
 	static void _bind_methods();
 
 public:
+	virtual void shortcut_input(const Ref<InputEvent> &p_event) override;
+
+	static AIAssistantDock *get_singleton() { return singleton; }
+	void toggle_gif_recording();
+
 	AIAssistantDock();
 	~AIAssistantDock();
 

@@ -10,6 +10,7 @@
 
 #include "editor/plugins/editor_plugin.h"
 
+#include "core/input/input_event.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
@@ -29,39 +30,7 @@
 class ArtDirectorPanel : public PanelContainer {
 	GDCLASS(ArtDirectorPanel, PanelContainer);
 
-	// ── Style Profile section ────────────────────────────────────────────
-	VBoxContainer *profile_section = nullptr;
-	Label *profile_style_label = nullptr;
-	Label *profile_ref_label = nullptr;
-
-	// ── Style Explorations gallery ───────────────────────────────────────
-	HBoxContainer *exploration_header = nullptr;
-	Button *exploration_refresh_button = nullptr;
-	HBoxContainer *exploration_gallery = nullptr;
-	int selected_exploration_index = -1;
-	Button *exploration_set_ref_button = nullptr;
-
-	// ── Cornerstone Assets gallery ───────────────────────────────────────
-	HBoxContainer *cornerstone_header = nullptr;
-	Button *cornerstone_refresh_button = nullptr;
-	HBoxContainer *cornerstone_gallery = nullptr;
-	int selected_cornerstone_index = -1;
-	Button *cornerstone_set_ref_button = nullptr;
-
-	// ── Model selection ──────────────────────────────────────────────────
-	OptionButton *exploration_model_picker = nullptr;
-
-	// ── HTTP infrastructure ──────────────────────────────────────────────
-	HTTPRequest *profile_http_request = nullptr;
-	HTTPRequest *images_http_request = nullptr;
-	HTTPRequest *models_http_request = nullptr;
-	HTTPRequest *set_ref_http_request = nullptr;
-	Timer *gallery_refresh_timer = nullptr;
-	bool images_request_in_progress = false;
-
-	String service_url = "http://localhost:4096";
-
-	// ── Image data ────────────────────────────────────────────────────────
+	// ── Image data (must be before SessionInfo) ─────────────────────────
 	struct ThumbInfo {
 		String res_path;
 		String category; // "exploration" or "cornerstone"
@@ -69,13 +38,46 @@ class ArtDirectorPanel : public PanelContainer {
 		String tooltip;  // full subject description for hover
 		Ref<ImageTexture> texture;
 	};
-	Vector<ThumbInfo> exploration_thumbs;
+
+	// ── Model selection (top) ────────────────────────────────────────────
+	OptionButton *model_picker = nullptr;
+
+	// ── ① Style Explorations ────────────────────────────────────────────
+	HBoxContainer *exploration_gallery = nullptr;
+	Button *session_prev_button = nullptr;
+	Button *session_next_button = nullptr;
+	Label *session_label = nullptr;
+	Button *exploration_refresh_button = nullptr;
+
+	// Session tracking
+	int current_session_index = 0;
+	struct SessionInfo {
+		String id;
+		Vector<ThumbInfo> images;
+	};
+	Vector<SessionInfo> exploration_sessions;
+
+	// ── ② Selected Style ────────────────────────────────────────────────
+	TextureRect *selected_style_thumb = nullptr;
+	Label *selected_style_label = nullptr;
+	Label *selected_ref_label = nullptr;
+
+	// ── ③ Cornerstone Assets ────────────────────────────────────────────
+	HBoxContainer *cornerstone_gallery = nullptr;
+	Button *cornerstone_refresh_button = nullptr;
 	Vector<ThumbInfo> cornerstone_thumbs;
 
-	// Double-click tracking for thumbnails
-	uint64_t last_thumb_click_time = 0;
-	String last_thumb_click_category;
-	int last_thumb_click_index = -1;
+	// ── HTTP infrastructure ──────────────────────────────────────────────
+	HTTPRequest *profile_http_request = nullptr;
+	HTTPRequest *images_http_request = nullptr;
+	HTTPRequest *models_http_request = nullptr;
+	Timer *gallery_refresh_timer = nullptr;
+	bool images_request_in_progress = false;
+
+	String service_url = "http://localhost:4096";
+
+	// Thumbnail interaction
+	void _on_thumb_gui_input(const Ref<InputEvent> &p_event, String p_abs_path);
 
 	// ── Internal helpers ─────────────────────────────────────────────────
 	void _setup_ui();
@@ -83,6 +85,7 @@ class ArtDirectorPanel : public PanelContainer {
 	void _refresh_images();
 	void _load_thumbnail(const String &p_abs_path, ThumbInfo &r_info);
 	void _rebuild_gallery(HBoxContainer *p_gallery, const Vector<ThumbInfo> &p_thumbs, const String &p_category);
+	void _rebuild_exploration_gallery();
 
 	// Internal helpers (continued)
 	void _refresh_models();
@@ -92,16 +95,14 @@ class ArtDirectorPanel : public PanelContainer {
 	void _on_profile_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_images_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_models_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-	void _on_set_ref_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
 	// UI callbacks
-	void _on_exploration_thumb_pressed(int p_index);
-	void _on_cornerstone_thumb_pressed(int p_index);
 	void _on_open_image_pressed(String p_abs_path);
-	void _on_set_reference_pressed();
 	void _on_exploration_refresh_pressed();
 	void _on_cornerstone_refresh_pressed();
 	void _on_gallery_refresh_timeout();
+	void _on_session_prev_pressed();
+	void _on_session_next_pressed();
 
 	String _get_project_root() const;
 	String _abs_path_from_res(const String &p_res_path) const;

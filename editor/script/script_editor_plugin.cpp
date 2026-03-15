@@ -30,6 +30,7 @@
 
 #include "script_editor_plugin.h"
 
+#include "core/version.h"
 #include "core/config/project_settings.h"
 #include "core/input/input.h"
 #include "core/io/config_file.h"
@@ -4585,7 +4586,7 @@ void ScriptEditorPlugin::_window_visibility_changed(bool p_visible) {
 void ScriptEditorPlugin::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_TRANSLATION_CHANGED: {
-			window_wrapper->set_window_title(vformat(TTR("%s - Godot Engine"), TTR("Script Editor")));
+			window_wrapper->set_window_title(vformat(TTR("%s - " GODOT_VERSION_NAME), TTR("Script Editor")));
 		} break;
 		case NOTIFICATION_ENTER_TREE: {
 			connect("main_screen_changed", callable_mp(this, &ScriptEditorPlugin::_save_last_editor));

@@ -29,6 +29,8 @@
 
 #include "ai_asset_generation_manager.h"
 
+#include "editor/plugins/ai_assistant/ai_assistant_dock.h"
+
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
@@ -42,6 +44,7 @@
 AIAssetGenerationManager *AIAssetGenerationManager::singleton = nullptr;
 
 void AIAssetGenerationManager::_bind_methods() {
+	ADD_SIGNAL(MethodInfo("pipeline_state_changed", PropertyInfo(Variant::STRING, "asset_path"), PropertyInfo(Variant::BOOL, "active"), PropertyInfo(Variant::FLOAT, "elapsed")));
 }
 
 AIAssetGenerationManager::AIAssetGenerationManager() {
@@ -64,12 +67,39 @@ AIAssetGenerationManager::AIAssetGenerationManager() {
 	add_child(file_request);
 	file_request->connect("request_completed", callable_mp(this, &AIAssetGenerationManager::_on_file_completed));
 
-	// Create poll timer
+	// Create poll timer (for legacy direct generation)
 	poll_timer = memnew(Timer);
 	poll_timer->set_wait_time(2.0);
 	poll_timer->set_one_shot(false);
 	add_child(poll_timer);
 	poll_timer->connect("timeout", callable_mp(this, &AIAssetGenerationManager::_on_poll_timeout));
+
+	// Pipeline background session HTTP requests
+	pipeline_session_request = memnew(HTTPRequest);
+	add_child(pipeline_session_request);
+	pipeline_session_request->connect("request_completed", callable_mp(this, &AIAssetGenerationManager::_on_pipeline_session_created));
+
+	pipeline_prompt_request = memnew(HTTPRequest);
+	add_child(pipeline_prompt_request);
+	pipeline_prompt_request->connect("request_completed", callable_mp(this, &AIAssetGenerationManager::_on_pipeline_prompt_sent));
+
+	pipeline_poll_request = memnew(HTTPRequest);
+	add_child(pipeline_poll_request);
+	pipeline_poll_request->connect("request_completed", callable_mp(this, &AIAssetGenerationManager::_on_pipeline_poll_completed));
+
+	// Pipeline elapsed timer (1s tick)
+	pipeline_elapsed_timer = memnew(Timer);
+	pipeline_elapsed_timer->set_wait_time(1.0);
+	pipeline_elapsed_timer->set_one_shot(false);
+	add_child(pipeline_elapsed_timer);
+	pipeline_elapsed_timer->connect("timeout", callable_mp(this, &AIAssetGenerationManager::_on_pipeline_elapsed_tick));
+
+	// Pipeline poll timer (check session completion every 3s)
+	pipeline_poll_timer = memnew(Timer);
+	pipeline_poll_timer->set_wait_time(3.0);
+	pipeline_poll_timer->set_one_shot(false);
+	add_child(pipeline_poll_timer);
+	pipeline_poll_timer->connect("timeout", callable_mp(this, &AIAssetGenerationManager::_on_pipeline_poll_timeout));
 
 	// Create prompt editor dialog
 	prompt_dialog = memnew(AIPromptEditorDialog);
@@ -103,11 +133,6 @@ void AIAssetGenerationManager::_toast(const String &p_message) {
 // ── Public API ───────────────────────────────────────────────────────────
 
 void AIAssetGenerationManager::generate_from_placeholder(const String &p_path) {
-	if (is_busy()) {
-		_toast(TTR("A generation is already in progress."));
-		return;
-	}
-
 	Dictionary asset_meta = AIAssetMetadata::get_metadata(p_path);
 	if (asset_meta.is_empty()) {
 		_toast(TTR("No AI metadata found for this asset."));
@@ -117,22 +142,16 @@ void AIAssetGenerationManager::generate_from_placeholder(const String &p_path) {
 	String prompt = asset_meta.get(AIAssetMetadata::KEY_PROMPT, "");
 	String negative_prompt = asset_meta.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, "");
 	String model = asset_meta.get(AIAssetMetadata::KEY_MODEL, "");
-	int seed = (int)asset_meta.get(AIAssetMetadata::KEY_SEED, -1);
 
 	if (prompt.is_empty()) {
 		_toast(TTR("Asset has no prompt. Use 'Edit Prompt' first."));
 		return;
 	}
 
-	_start_generation(p_path, prompt, negative_prompt, model, seed);
+	_start_pipeline_generation(p_path, prompt, negative_prompt, model);
 }
 
 void AIAssetGenerationManager::quick_regenerate(const String &p_path) {
-	if (is_busy()) {
-		_toast(TTR("A generation is already in progress."));
-		return;
-	}
-
 	Dictionary asset_meta = AIAssetMetadata::get_metadata(p_path);
 	if (asset_meta.is_empty()) {
 		_toast(TTR("No AI metadata found for this asset."));
@@ -143,15 +162,11 @@ void AIAssetGenerationManager::quick_regenerate(const String &p_path) {
 	String negative_prompt = asset_meta.get(AIAssetMetadata::KEY_NEGATIVE_PROMPT, "");
 	String model = asset_meta.get(AIAssetMetadata::KEY_MODEL, "");
 
-	_start_generation(p_path, prompt, negative_prompt, model, -1); // -1 = random seed
+	_start_pipeline_generation(p_path, prompt, negative_prompt, model);
 }
 
 void AIAssetGenerationManager::generate_with_params(const String &p_path, const String &p_prompt, const String &p_negative_prompt, const String &p_model, int p_seed) {
-	if (is_busy()) {
-		_toast(TTR("A generation is already in progress."));
-		return;
-	}
-	_start_generation(p_path, p_prompt, p_negative_prompt, p_model, p_seed);
+	_start_pipeline_generation(p_path, p_prompt, p_negative_prompt, p_model);
 }
 
 void AIAssetGenerationManager::open_prompt_editor(const String &p_path, AIPromptEditorDialog::Mode p_mode) {
@@ -182,7 +197,7 @@ void AIAssetGenerationManager::_on_prompt_confirmed(const String &p_prompt, cons
 	asset_meta[AIAssetMetadata::KEY_SEED] = p_seed;
 	AIAssetMetadata::set_metadata(path, asset_meta);
 
-	_start_generation(path, p_prompt, p_negative_prompt, p_model, p_seed);
+	_start_pipeline_generation(path, p_prompt, p_negative_prompt, p_model);
 }
 
 void AIAssetGenerationManager::_start_generation(const String &p_path, const String &p_prompt, const String &p_negative_prompt, const String &p_model, int p_seed) {
@@ -228,6 +243,197 @@ void AIAssetGenerationManager::_start_generation(const String &p_path, const Str
 		print_line(vformat("AIGeneration: request() returned error %d", (int)err));
 		_finish_generation(false, TTR("Failed to start generation."));
 	}
+}
+
+void AIAssetGenerationManager::_start_pipeline_generation(const String &p_path, const String &p_prompt, const String &p_negative_prompt, const String &p_model) {
+	// Route generation through a BACKGROUND session — creates a new session,
+	// sends the pipeline prompt, and polls for completion. Does NOT use the
+	// visible AA chat session.
+
+	AIAssistantDock *aa = AIAssistantDock::get_singleton();
+	if (!aa) {
+		_toast(TTR("AI Assistant not available."));
+		return;
+	}
+
+	pipeline_service_url = aa->get_service_url();
+	if (pipeline_service_url.is_empty()) {
+		_toast(TTR("AI Assistant not connected. Connect first, then retry."));
+		return;
+	}
+
+	state = STATE_PIPELINE;
+	current_asset_path = p_path;
+	pipeline_elapsed_seconds = 0.0;
+
+	// Detect asset type
+	Dictionary asset_meta = AIAssetMetadata::get_metadata(p_path);
+	String asset_type = asset_meta.get(AIAssetMetadata::KEY_ASSET_TYPE, "sprite");
+
+	// Build the AI prompt that instructs the LLM to call godot_asset_pipeline
+	pipeline_ai_prompt = vformat(
+			"Generate the asset at `%s` using `godot_asset_pipeline` with these parameters:\n"
+			"- prompt: \"%s\"\n"
+			"- destination: \"%s\"\n"
+			"- asset_type: \"%s\"",
+			p_path, p_prompt.replace("\"", "\\\""), p_path, asset_type);
+	if (!p_negative_prompt.is_empty()) {
+		pipeline_ai_prompt += vformat("\n- negative_prompt: \"%s\"", p_negative_prompt.replace("\"", "\\\""));
+	}
+	if (!p_model.is_empty()) {
+		pipeline_ai_prompt += vformat("\n- model: \"%s\"", p_model);
+	}
+	pipeline_ai_prompt += "\n\nCall the tool now. Score the result and retry if needed.";
+
+	// Step 1: Create a background session
+	Dictionary body;
+	body["title"] = vformat("Asset Pipeline: %s", p_path.get_file());
+	String json_body = JSON::stringify(body);
+	String url = pipeline_service_url + "/session?directory=" + _get_project_directory().uri_encode();
+
+	print_line(vformat("AIGeneration: creating background session for pipeline: %s", p_path));
+
+	Error err = pipeline_session_request->request(url, _get_headers(), HTTPClient::METHOD_POST, json_body);
+	if (err != OK) {
+		_finish_pipeline(false, TTR("Failed to create background session."));
+		return;
+	}
+
+	// Start elapsed timer immediately
+	pipeline_elapsed_timer->start();
+	emit_signal("pipeline_state_changed", current_asset_path, true, 0.0);
+}
+
+void AIAssetGenerationManager::_on_pipeline_session_created(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || (p_code != 200 && p_code != 201)) {
+		_finish_pipeline(false, TTR("Failed to create background session."));
+		return;
+	}
+
+	String body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+	JSON json;
+	if (json.parse(body_str) != OK) {
+		_finish_pipeline(false, TTR("Invalid session creation response."));
+		return;
+	}
+
+	Dictionary resp = json.get_data();
+	pipeline_session_id = resp.get("id", "");
+	if (pipeline_session_id.is_empty()) {
+		_finish_pipeline(false, TTR("No session ID in response."));
+		return;
+	}
+
+	print_line(vformat("AIGeneration: background session created: %s", pipeline_session_id));
+
+	// Step 2: Send the pipeline prompt via prompt_async
+	Dictionary body;
+	Array parts;
+	Dictionary text_part;
+	text_part["type"] = "text";
+	text_part["text"] = pipeline_ai_prompt;
+	parts.push_back(text_part);
+	body["parts"] = parts;
+
+	String json_body = JSON::stringify(body);
+	String url = pipeline_service_url + "/session/" + pipeline_session_id + "/prompt_async?directory=" + _get_project_directory().uri_encode();
+
+	Error err = pipeline_prompt_request->request(url, _get_headers(), HTTPClient::METHOD_POST, json_body);
+	if (err != OK) {
+		_finish_pipeline(false, TTR("Failed to send pipeline prompt."));
+	}
+}
+
+void AIAssetGenerationManager::_on_pipeline_prompt_sent(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || (p_code != 200 && p_code != 204)) {
+		_finish_pipeline(false, TTR("Failed to start pipeline generation."));
+		return;
+	}
+
+	print_line("AIGeneration: pipeline prompt sent, starting poll timer");
+
+	// Start polling for completion
+	pipeline_poll_timer->start();
+}
+
+void AIAssetGenerationManager::_on_pipeline_elapsed_tick() {
+	pipeline_elapsed_seconds += 1.0;
+	emit_signal("pipeline_state_changed", current_asset_path, true, pipeline_elapsed_seconds);
+}
+
+void AIAssetGenerationManager::_on_pipeline_poll_timeout() {
+	if (state != STATE_PIPELINE || pipeline_session_id.is_empty()) {
+		pipeline_poll_timer->stop();
+		return;
+	}
+
+	// Check session messages — if an assistant message exists, the pipeline is done
+	String url = pipeline_service_url + "/session/" + pipeline_session_id + "/message?directory=" + _get_project_directory().uri_encode();
+	pipeline_poll_request->request(url, _get_headers());
+}
+
+void AIAssetGenerationManager::_on_pipeline_poll_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		return; // Keep polling — transient error
+	}
+
+	String body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+	JSON json;
+	if (json.parse(body_str) != OK) {
+		return;
+	}
+
+	// The response is an array of messages. We look for an assistant message
+	// which indicates the pipeline has completed (either success or failure).
+	Array messages = json.get_data();
+	bool has_assistant_response = false;
+	for (int i = 0; i < messages.size(); i++) {
+		Dictionary msg = messages[i];
+		String role = msg.get("role", "");
+		if (role == "assistant") {
+			has_assistant_response = true;
+			break;
+		}
+	}
+
+	if (has_assistant_response) {
+		// Pipeline completed — trigger reimport and finish
+		EditorFileSystem::get_singleton()->scan_changes();
+		_finish_pipeline(true);
+	}
+	// Otherwise keep polling
+}
+
+void AIAssetGenerationManager::cancel_pipeline() {
+	if (state != STATE_PIPELINE) {
+		return;
+	}
+	print_line("AIGeneration: pipeline cancelled by user");
+	_finish_pipeline(false, TTR("Pipeline generation cancelled."));
+}
+
+void AIAssetGenerationManager::_finish_pipeline(bool p_success, const String &p_message) {
+	pipeline_elapsed_timer->stop();
+	pipeline_poll_timer->stop();
+
+	String asset_path = current_asset_path;
+	double elapsed = pipeline_elapsed_seconds;
+
+	pipeline_session_id = "";
+	pipeline_service_url = "";
+	pipeline_ai_prompt = "";
+	pipeline_elapsed_seconds = 0.0;
+	state = STATE_IDLE;
+
+	if (p_success) {
+		_toast(vformat(TTR("Asset generated: %s (%.0fs)"), asset_path.get_file(), elapsed));
+	} else {
+		String msg = p_message.is_empty() ? TTR("Pipeline generation failed.") : p_message;
+		EditorToaster::get_singleton()->popup_str(msg, EditorToaster::SEVERITY_ERROR);
+	}
+
+	current_asset_path = "";
+	emit_signal("pipeline_state_changed", asset_path, false, elapsed);
 }
 
 void AIAssetGenerationManager::_on_generate_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {

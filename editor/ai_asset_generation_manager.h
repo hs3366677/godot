@@ -46,6 +46,7 @@ public:
 		STATE_DOWNLOADING,
 		STATE_DOWNLOADING_FILE,
 		STATE_SAVING,
+		STATE_PIPELINE, // Background pipeline session active
 	};
 
 private:
@@ -98,10 +99,29 @@ private:
 	void _on_poll_timeout();
 	void _on_prompt_confirmed(const String &p_prompt, const String &p_negative_prompt, const String &p_model, int p_seed);
 	void _start_generation(const String &p_path, const String &p_prompt, const String &p_negative_prompt, const String &p_model, int p_seed);
+	void _start_pipeline_generation(const String &p_path, const String &p_prompt, const String &p_negative_prompt, const String &p_model);
 	void _finish_generation(bool p_success, const String &p_message = "");
 	void _download_next_file();
 	void _post_process_asset();
 	void _toast(const String &p_message);
+
+	// Pipeline background session
+	HTTPRequest *pipeline_session_request = nullptr; // POST /session/ to create bg session
+	HTTPRequest *pipeline_prompt_request = nullptr; // POST /session/{id}/prompt_async
+	HTTPRequest *pipeline_poll_request = nullptr; // GET /session/{id}/message to check completion
+	Timer *pipeline_elapsed_timer = nullptr; // 1s tick for elapsed time
+	Timer *pipeline_poll_timer = nullptr; // Poll for session completion
+	String pipeline_session_id;
+	String pipeline_service_url;
+	double pipeline_elapsed_seconds = 0.0;
+	String pipeline_ai_prompt; // Stored prompt to send after session creation
+
+	void _on_pipeline_session_created(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_pipeline_prompt_sent(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_pipeline_elapsed_tick();
+	void _on_pipeline_poll_timeout();
+	void _on_pipeline_poll_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _finish_pipeline(bool p_success, const String &p_message = "");
 
 protected:
 	static void _bind_methods();
@@ -118,6 +138,9 @@ public:
 
 	bool is_busy() const { return state != STATE_IDLE; }
 	State get_state() const { return state; }
+	String get_pipeline_asset_path() const { return (state == STATE_PIPELINE) ? current_asset_path : ""; }
+	double get_pipeline_elapsed() const { return pipeline_elapsed_seconds; }
+	void cancel_pipeline();
 
 	AIAssetGenerationManager();
 	~AIAssetGenerationManager();
