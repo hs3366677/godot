@@ -69,11 +69,26 @@ void AIAssistantDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_service_url"), &AIAssistantDock::get_service_url);
 	ClassDB::bind_method(D_METHOD("is_connected_to_service"), &AIAssistantDock::is_connected_to_service);
 	ClassDB::bind_method(D_METHOD("_check_service_health_deferred"), &AIAssistantDock::_check_service_health_deferred);
+	ClassDB::bind_method(D_METHOD("_on_reconnect_timeout"), &AIAssistantDock::_on_reconnect_timeout);
 
 	// UI handlers
 	ClassDB::bind_method(D_METHOD("_on_send_pressed"), &AIAssistantDock::_on_send_pressed);
 	ClassDB::bind_method(D_METHOD("_on_stop_pressed"), &AIAssistantDock::_on_stop_pressed);
 	ClassDB::bind_method(D_METHOD("_on_send_or_stop_pressed"), &AIAssistantDock::_on_send_or_stop_pressed);
+	ClassDB::bind_method(D_METHOD("_on_setup_pressed"), &AIAssistantDock::_on_setup_pressed);
+	ClassDB::bind_method(D_METHOD("_on_wizard_back"), &AIAssistantDock::_on_wizard_back);
+	ClassDB::bind_method(D_METHOD("_on_wizard_next"), &AIAssistantDock::_on_wizard_next);
+	ClassDB::bind_method(D_METHOD("_on_wizard_skip"), &AIAssistantDock::_on_wizard_skip);
+	ClassDB::bind_method(D_METHOD("_on_wizard_api_key_connect", "provider_id"), &AIAssistantDock::_on_wizard_api_key_connect);
+	ClassDB::bind_method(D_METHOD("_on_wizard_api_key_submit", "provider_id"), &AIAssistantDock::_on_wizard_api_key_submit);
+	ClassDB::bind_method(D_METHOD("_on_wizard_api_key_completed", "result", "code", "headers", "body", "provider_id"), &AIAssistantDock::_on_wizard_api_key_completed);
+	ClassDB::bind_method(D_METHOD("_on_wizard_local_health_completed", "result", "code", "headers", "body", "provider_id"), &AIAssistantDock::_on_wizard_local_health_completed);
+	ClassDB::bind_method(D_METHOD("_on_wizard_fetch_image_model_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_wizard_fetch_image_model_completed);
+	ClassDB::bind_method(D_METHOD("_on_wizard_image_model_selected", "index"), &AIAssistantDock::_on_wizard_image_model_selected);
+	ClassDB::bind_method(D_METHOD("_on_wizard_image_model_saved", "result", "code", "headers", "body"), &AIAssistantDock::_on_wizard_image_model_saved);
+	ClassDB::bind_method(D_METHOD("_on_wizard_fetch_rembg_method_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_wizard_fetch_rembg_method_completed);
+	ClassDB::bind_method(D_METHOD("_on_wizard_rembg_method_selected", "index"), &AIAssistantDock::_on_wizard_rembg_method_selected);
+	ClassDB::bind_method(D_METHOD("_on_wizard_rembg_method_saved", "result", "code", "headers", "body"), &AIAssistantDock::_on_wizard_rembg_method_saved);
 	ClassDB::bind_method(D_METHOD("_on_settings_pressed"), &AIAssistantDock::_on_settings_pressed);
 	ClassDB::bind_method(D_METHOD("_on_new_instance_pressed"), &AIAssistantDock::_on_new_instance_pressed);
 	ClassDB::bind_method(D_METHOD("_on_prompt_input_gui_input", "event"), &AIAssistantDock::_on_prompt_input_gui_input);
@@ -106,7 +121,6 @@ void AIAssistantDock::_bind_methods() {
 
 	// HTTP request callbacks
 	ClassDB::bind_method(D_METHOD("_on_http_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_http_request_completed);
-	ClassDB::bind_method(D_METHOD("_on_settings_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_settings_request_completed);
 	ClassDB::bind_method(D_METHOD("_on_providers_status_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_providers_status_completed);
 	ClassDB::bind_method(D_METHOD("_on_provider_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_provider_request_completed);
 	ClassDB::bind_method(D_METHOD("_on_auth_request_completed", "result", "code", "headers", "body"), &AIAssistantDock::_on_auth_request_completed);
@@ -128,13 +142,9 @@ void AIAssistantDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("cleanup_before_close"), &AIAssistantDock::cleanup_before_close);
 
 	// Settings
-	ClassDB::bind_method(D_METHOD("_on_replicate_test_pressed"), &AIAssistantDock::_on_replicate_test_pressed);
-	ClassDB::bind_method(D_METHOD("_on_meshy_test_pressed"), &AIAssistantDock::_on_meshy_test_pressed);
 	ClassDB::bind_method(D_METHOD("_on_settings_save_pressed"), &AIAssistantDock::_on_settings_save_pressed);
 	ClassDB::bind_method(D_METHOD("_on_generate_prompt_pressed"), &AIAssistantDock::_on_generate_prompt_pressed);
 	ClassDB::bind_method(D_METHOD("_on_engine_prompt_selected"), &AIAssistantDock::_on_engine_prompt_selected);
-	ClassDB::bind_method(D_METHOD("_on_settings_category_selected", "index"), &AIAssistantDock::_on_settings_category_selected);
-	ClassDB::bind_method(D_METHOD("_on_rembg_method_selected", "index"), &AIAssistantDock::_on_rembg_method_selected);
 
 	// Timers
 	ClassDB::bind_method(D_METHOD("_on_processing_timer_timeout"), &AIAssistantDock::_on_processing_timer_timeout);
@@ -271,6 +281,11 @@ void AIAssistantDock::_setup_ui() {
 	toolbar_container->add_child(autotest_toggle);
 
 	toolbar_container->add_spacer();
+
+	setup_button = memnew(Button);
+	setup_button->set_tooltip_text("Setup AI providers - connect your API keys or use free models");
+	setup_button->set_flat(true);
+	toolbar_container->add_child(setup_button);
 
 	settings_button = memnew(Button);
 	settings_button->set_tooltip_text("Configure AI asset generation providers");
@@ -542,6 +557,12 @@ void AIAssistantDock::_setup_ui() {
 	http_auth_request = memnew(HTTPRequest);
 	add_child(http_auth_request);
 
+	// Timer for reconnecting when initial health check fails
+	reconnect_timer = memnew(Timer);
+	reconnect_timer->set_wait_time(3.0);
+	reconnect_timer->set_autostart(false);
+	add_child(reconnect_timer);
+
 	// Timer for OAuth polling (redirect-based flow)
 	auth_poll_timer = memnew(Timer);
 	auth_poll_timer->set_wait_time(3.0);
@@ -567,160 +588,16 @@ void AIAssistantDock::_setup_ui() {
 	auth_code_dialog->add_child(dialog_vbox);
 	add_child(auth_code_dialog);
 
-	// Settings dialog (left tab list + right content panel)
+	// Settings dialog (Prompt only)
 	settings_dialog = memnew(AcceptDialog);
 	settings_dialog->set_title("Settings");
 	settings_dialog->set_ok_button_text("Save");
-	settings_dialog->set_min_size(Size2(700, 500));
+	settings_dialog->set_min_size(Size2(600, 400));
+	settings_dialog->set_max_size(Size2(800, 600));
 
-	HSplitContainer *settings_split = memnew(HSplitContainer);
-	settings_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-
-	// Left: category list
-	settings_category_list = memnew(ItemList);
-	settings_category_list->set_custom_minimum_size(Size2(140, 0));
-	settings_category_list->set_auto_translate_mode(Node::AUTO_TRANSLATE_MODE_DISABLED);
-	settings_category_list->add_item("Providers");
-	settings_category_list->add_item("Texture Processing");
-	settings_category_list->add_item("Prompt");
-	settings_category_list->select(0);
-	settings_split->add_child(settings_category_list);
-
-	// Right: stacked pages
-	settings_pages = memnew(VBoxContainer);
-	settings_pages->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	settings_pages->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	settings_split->add_child(settings_pages);
-
-	// ── Page 0: Providers ──
-	settings_providers_page = memnew(VBoxContainer);
-	settings_providers_page->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	settings_pages->add_child(settings_providers_page);
-
-	// Replicate (2D textures)
-	HBoxContainer *replicate_header = memnew(HBoxContainer);
-	Label *replicate_label = memnew(Label);
-	replicate_label->set_text("Replicate API Token:");
-	replicate_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	replicate_header->add_child(replicate_label);
-	replicate_test_button = memnew(Button);
-	replicate_test_button->set_text("Test");
-	replicate_header->add_child(replicate_test_button);
-	replicate_status_label = memnew(Label);
-	replicate_status_label->set_text("");
-	replicate_status_label->add_theme_font_size_override("font_size", 11);
-	replicate_status_label->set_custom_minimum_size(Size2(80, 0));
-	replicate_header->add_child(replicate_status_label);
-	settings_providers_page->add_child(replicate_header);
-
-	Label *replicate_hint = memnew(Label);
-	replicate_hint->set_text("Get your token from replicate.com/account/api-tokens");
-	replicate_hint->add_theme_font_size_override("font_size", 11);
-	replicate_hint->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
-	settings_providers_page->add_child(replicate_hint);
-
-	replicate_token_input = memnew(LineEdit);
-	replicate_token_input->set_placeholder("r8_...");
-	replicate_token_input->set_secret(true);
-	settings_providers_page->add_child(replicate_token_input);
-
-	// Meshy (3D models)
-	settings_providers_page->add_child(memnew(HSeparator));
-
-	HBoxContainer *meshy_header = memnew(HBoxContainer);
-	Label *meshy_label = memnew(Label);
-	meshy_label->set_text("Meshy API Key (3D Models):");
-	meshy_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	meshy_header->add_child(meshy_label);
-	meshy_test_button = memnew(Button);
-	meshy_test_button->set_text("Test");
-	meshy_header->add_child(meshy_test_button);
-	meshy_status_label = memnew(Label);
-	meshy_status_label->set_text("");
-	meshy_status_label->add_theme_font_size_override("font_size", 11);
-	meshy_status_label->set_custom_minimum_size(Size2(80, 0));
-	meshy_header->add_child(meshy_status_label);
-	settings_providers_page->add_child(meshy_header);
-
-	Label *meshy_hint = memnew(Label);
-	meshy_hint->set_text("Get your key from meshy.ai — used for AI 3D model generation");
-	meshy_hint->add_theme_font_size_override("font_size", 11);
-	meshy_hint->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
-	settings_providers_page->add_child(meshy_hint);
-
-	meshy_token_input = memnew(LineEdit);
-	meshy_token_input->set_placeholder("msy_...");
-	meshy_token_input->set_secret(true);
-	settings_providers_page->add_child(meshy_token_input);
-
-	// PhotoRoom API key
-	settings_providers_page->add_child(memnew(HSeparator));
-
-	HBoxContainer *removebg_header = memnew(HBoxContainer);
-	Label *removebg_label = memnew(Label);
-	removebg_label->set_text("PhotoRoom API Key:");
-	removebg_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	removebg_header->add_child(removebg_label);
-	settings_providers_page->add_child(removebg_header);
-
-	Label *removebg_hint = memnew(Label);
-	removebg_hint->set_text("Get your key from docs.photoroom.com — used for background removal");
-	removebg_hint->add_theme_font_size_override("font_size", 11);
-	removebg_hint->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
-	settings_providers_page->add_child(removebg_hint);
-
-	removebg_token_input = memnew(LineEdit);
-	removebg_token_input->set_placeholder("API key...");
-	removebg_token_input->set_secret(true);
-	settings_providers_page->add_child(removebg_token_input);
-
-	// ── Page 1: Texture Processing ──
-	settings_texture_page = memnew(VBoxContainer);
-	settings_texture_page->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	settings_texture_page->set_visible(false);
-	settings_pages->add_child(settings_texture_page);
-
-	Label *rembg_section = memnew(Label);
-	rembg_section->set_text("Background Removal Method");
-	rembg_section->add_theme_font_size_override("font_size", 14);
-	settings_texture_page->add_child(rembg_section);
-
-	Label *rembg_desc = memnew(Label);
-	rembg_desc->set_text("Choose how sprite backgrounds are removed during asset processing.");
-	rembg_desc->add_theme_font_size_override("font_size", 11);
-	rembg_desc->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
-	rembg_desc->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	settings_texture_page->add_child(rembg_desc);
-
-	settings_texture_page->add_spacer(false);
-
-	rembg_method_selector = memnew(OptionButton);
-	rembg_method_selector->add_item("Online API (PhotoRoom)", 0);
-	rembg_method_selector->add_item("Local Python (rembg)", 1);
-	settings_texture_page->add_child(rembg_method_selector);
-
-	// API method description
-	rembg_api_info = memnew(Label);
-	rembg_api_info->set_text("Uses the PhotoRoom cloud API. Requires PHOTOROOM_API_KEY in Providers tab.\nBest quality, but requires internet and API credits.");
-	rembg_api_info->add_theme_font_size_override("font_size", 11);
-	rembg_api_info->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
-	rembg_api_info->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	settings_texture_page->add_child(rembg_api_info);
-
-	// Local method description
-	rembg_local_info = memnew(Label);
-	rembg_local_info->set_text("Uses local Python 'rembg' package. Requires: pip install rembg[gpu]\nFree and offline, but requires Python and may be slower.");
-	rembg_local_info->add_theme_font_size_override("font_size", 11);
-	rembg_local_info->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
-	rembg_local_info->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	rembg_local_info->set_visible(false);
-	settings_texture_page->add_child(rembg_local_info);
-
-	// ── Page 2: Prompt ──
 	settings_prompt_page = memnew(VBoxContainer);
 	settings_prompt_page->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	settings_prompt_page->set_visible(false);
-	settings_pages->add_child(settings_prompt_page);
+	settings_prompt_page->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 
 	// Project Prompt section header
 	Label *project_section = memnew(Label);
@@ -770,19 +647,12 @@ void AIAssistantDock::_setup_ui() {
 	engine_prompt_preview->set_text("Select an engine prompt file above to preview its contents.");
 	settings_prompt_page->add_child(engine_prompt_preview);
 
-	settings_dialog->add_child(settings_split);
+	settings_dialog->add_child(settings_prompt_page);
 	add_child(settings_dialog);
 
-	settings_http_request = memnew(HTTPRequest);
-	add_child(settings_http_request);
-	settings_http_request->connect("request_completed", Callable(this, "_on_settings_request_completed"));
-	replicate_test_button->connect("pressed", Callable(this, "_on_replicate_test_pressed"));
-	meshy_test_button->connect("pressed", Callable(this, "_on_meshy_test_pressed"));
 	generate_prompt_button->connect("pressed", Callable(this, "_on_generate_prompt_pressed"));
 	engine_prompt_tree->connect("item_selected", Callable(this, "_on_engine_prompt_selected"));
 	settings_dialog->connect("confirmed", Callable(this, "_on_settings_save_pressed"));
-	settings_category_list->connect("item_selected", Callable(this, "_on_settings_category_selected"));
-	rembg_method_selector->connect("item_selected", Callable(this, "_on_rembg_method_selected"));
 
 	// Tool detail viewer popup (shows full input/output on click)
 	tool_detail_dialog = memnew(AcceptDialog);
@@ -860,6 +730,7 @@ void AIAssistantDock::_setup_logs_tab() {
 void AIAssistantDock::_connect_signals() {
 	// Chat signals
 	send_button->connect("pressed", Callable(this, "_on_send_or_stop_pressed"));
+	setup_button->connect("pressed", Callable(this, "_on_setup_pressed"));
 	settings_button->connect("pressed", Callable(this, "_on_settings_pressed"));
 	new_instance_button->connect("pressed", Callable(this, "_on_new_instance_pressed"));
 	prompt_input->connect("gui_input", Callable(this, "_on_prompt_input_gui_input"));
@@ -908,6 +779,9 @@ void AIAssistantDock::_connect_signals() {
 	auth_code_dialog->connect("confirmed", Callable(this, "_on_auth_code_submitted"));
 	auth_poll_timer->connect("timeout", Callable(this, "_poll_oauth_callback"));
 
+	// Reconnect timer
+	reconnect_timer->connect("timeout", Callable(this, "_on_reconnect_timeout"));
+
 	// Session list signals (for finding existing sessions)
 	session_list_http_request->connect("request_completed", Callable(this, "_on_session_list_completed"));
 
@@ -944,6 +818,7 @@ void AIAssistantDock::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
 			// Set settings button icon (theme available now)
+			setup_button->set_button_icon(get_editor_theme_icon(SNAME("Key")));
 			settings_button->set_button_icon(get_editor_theme_icon(SNAME("GearSettings")));
 
 			// Auto-connect to AI service on startup
@@ -1148,11 +1023,31 @@ void AIAssistantDock::_check_service_health() {
 	if (err != OK) {
 		print_line("[AIAssistant] Health check request failed immediately: error=" + String::num_int64(err));
 		pending_request = REQUEST_NONE;
-		connection_status = CONNECTION_ERROR;
-		_update_status("Request failed (err " + String::num_int64(err) + ")", Color(1, 0, 0));
-		_update_connection_indicator();
-		_add_system_message("Failed to send health check request. Error code: " + String::num_int64(err));
+		_schedule_reconnect();
 	}
+}
+
+void AIAssistantDock::_schedule_reconnect() {
+	reconnect_attempts++;
+	if (reconnect_attempts > MAX_RECONNECT_ATTEMPTS) {
+		connection_status = CONNECTION_ERROR;
+		_update_status("Connection failed", Color(1, 0, 0));
+		_update_connection_indicator();
+		_update_loading_overlay("Could not connect to AI service.\nMake sure it's running on " + service_url);
+		_add_system_message("Could not connect to AI service after " + itos(MAX_RECONNECT_ATTEMPTS) + " attempts.\nMake sure the AI server is running on " + service_url);
+		return;
+	}
+	connection_status = CONNECTING;
+	_update_status("Reconnecting (" + itos(reconnect_attempts) + "/" + itos(MAX_RECONNECT_ATTEMPTS) + ")...", Color(1, 1, 0));
+	_update_connection_indicator();
+	_update_loading_overlay("Connecting to AI service...");
+	print_line("[AIAssistant] Scheduling reconnect attempt " + itos(reconnect_attempts) + "/" + itos(MAX_RECONNECT_ATTEMPTS) + " in 3s");
+	reconnect_timer->start();
+}
+
+void AIAssistantDock::_on_reconnect_timeout() {
+	reconnect_timer->stop();
+	_check_service_health();
 }
 
 void AIAssistantDock::_create_session() {
@@ -1347,6 +1242,11 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 	_hide_processing();
 
 	if (p_result != HTTPRequest::RESULT_SUCCESS) {
+		// For health check failures, schedule a retry instead of giving up.
+		if (request_type == REQUEST_HEALTH) {
+			_schedule_reconnect();
+			return;
+		}
 		connection_status = CONNECTION_ERROR;
 		_update_status("Connection failed", Color(1, 0, 0));
 		_update_connection_indicator();
@@ -1419,13 +1319,13 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 	switch (request_type) {
 		case REQUEST_HEALTH: {
 			if (p_code == 200 && response_data.has("healthy") && bool(response_data["healthy"]) == true) {
+				// Successfully connected — stop reconnect timer and reset attempts.
+				reconnect_timer->stop();
+				reconnect_attempts = 0;
 				_add_system_message("AI service is running. Looking for existing session...");
 				_find_existing_session();
 			} else {
-				connection_status = CONNECTION_ERROR;
-				_update_status("Service error", Color(1, 0, 0));
-				_update_connection_indicator();
-				_add_system_message("AI service returned unexpected response");
+				_schedule_reconnect();
 			}
 		} break;
 
@@ -1464,9 +1364,6 @@ void AIAssistantDock::_on_http_request_completed(int p_result, int p_code, const
 				if (question_poll_timer) {
 					question_poll_timer->start();
 				}
-				// Auto-configure saved provider keys on the server
-				_auto_configure_providers();
-
 				// Fetch config to get saved model, then fetch available models
 				_fetch_config();
 			} else {
@@ -1625,36 +1522,952 @@ void AIAssistantDock::_on_clear_pressed() {
 	_create_session();
 }
 
-void AIAssistantDock::_on_settings_pressed() {
-	replicate_status_label->set_text("");
-	meshy_status_label->set_text("");
-	// Pre-fill with saved tokens from .env.keys
-	HashMap<String, String> env_keys = _read_env_keys();
-	if (env_keys.has("REPLICATE_API_TOKEN") && !env_keys["REPLICATE_API_TOKEN"].is_empty()) {
-		replicate_token_input->set_text(env_keys["REPLICATE_API_TOKEN"]);
-	}
-	if (env_keys.has("MESHY_API_KEY") && !env_keys["MESHY_API_KEY"].is_empty()) {
-		meshy_token_input->set_text(env_keys["MESHY_API_KEY"]);
-	}
-	if (env_keys.has("PHOTOROOM_API_KEY") && !env_keys["PHOTOROOM_API_KEY"].is_empty()) {
-		removebg_token_input->set_text(env_keys["PHOTOROOM_API_KEY"]);
+void AIAssistantDock::_on_setup_pressed() {
+	if (!wizard_dialog) {
+		_setup_wizard_ui();
 	}
 
-	// Load rembg method from .env.keys (REMBG_METHOD=api or REMBG_METHOD=local)
-	if (env_keys.has("REMBG_METHOD") && env_keys["REMBG_METHOD"] == "local") {
-		rembg_method_selector->select(1);
-		rembg_api_info->set_visible(false);
-		rembg_local_info->set_visible(true);
+	// Ensure capabilities are available (fallback if server hasn't responded yet)
+	if (wizard_capabilities.is_empty()) {
+		// Default capabilities matching provider_capabilities.json
+		String json_str = R"({
+			"anthropic": {"name": "Anthropic", "services": ["chat"], "keyPrefix": "sk-ant-"},
+			"openai": {"name": "OpenAI", "services": ["chat", "image-generation"], "keyPrefix": "sk-"},
+			"google": {"name": "Google", "services": ["chat"]},
+			"openrouter": {"name": "OpenRouter", "services": ["chat"], "keyPrefix": "sk-or-"},
+			"replicate": {"name": "Replicate", "services": ["image-generation", "background-removal"], "keyPrefix": "r8_"},
+			"photoroom": {"name": "PhotoRoom", "services": ["background-removal"], "keyPrefix": "sk_pr_"},
+			"meshy": {"name": "Meshy", "services": ["3d-generation"], "keyPrefix": "msy_"},
+			"suno": {"name": "Suno", "services": ["music-generation"]},
+			"doubao": {"name": "Doubao", "services": ["chat", "image-generation"]},
+			"local_rmbg": {"name": "RMBG-2.0", "services": ["background-removal"], "local": true, "healthCheck": "/ai-assets/rmbg-health"},
+			"local_atlas_split": {"name": "Atlas Splitter", "services": ["atlas-split"], "local": true, "healthCheck": "/ai-assets/atlas-split-health"},
+			"local_sharp": {"name": "Sharp", "services": ["image-postprocess"], "local": true, "healthCheck": "/ai-assets/sharp-health"},
+			"local_gifenc": {"name": "GIFenc", "services": ["gif-recording"], "local": true, "healthCheck": "/ai-assets/gifenc-health"}
+		})";
+		Variant parsed = JSON::parse_string(json_str);
+		if (parsed.get_type() == Variant::DICTIONARY) {
+			wizard_capabilities = parsed;
+		}
+	}
+
+	// Initialize connected state from server's connected set (includes non-chat providers like replicate)
+	wizard_connected.clear();
+	for (const String &pid : server_connected_providers) {
+		wizard_connected.insert(pid, true);
+	}
+	// Rebuild Step 1 rows to reflect current connected state
+	_wizard_rebuild_api_key_rows();
+	wizard_step = 0;
+	_wizard_show_step(0);
+	wizard_dialog->popup_centered();
+
+	// Auto-check health for all local providers every time wizard opens
+	Array cap_keys = wizard_capabilities.keys();
+	for (int i = 0; i < cap_keys.size(); i++) {
+		String provider_id = cap_keys[i];
+		Dictionary cap = wizard_capabilities[provider_id];
+		bool is_local = cap.get("local", false);
+		String health_url = cap.get("healthCheck", "");
+		if (!is_local || health_url.is_empty()) {
+			continue;
+		}
+		String url = service_url + health_url;
+		Vector<String> headers = _get_headers_with_directory();
+		HTTPRequest *req = memnew(HTTPRequest);
+		add_child(req);
+		req->connect("request_completed", Callable(this, "_on_wizard_local_health_completed").bind(provider_id));
+		req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+		req->request(url, headers, HTTPClient::METHOD_GET);
+	}
+}
+
+void AIAssistantDock::_setup_wizard_ui() {
+	wizard_dialog = memnew(AcceptDialog);
+	wizard_dialog->set_title("Setup Wizard");
+	wizard_dialog->set_min_size(Size2(600, 450));
+	wizard_dialog->set_ok_button_text(""); // Hide default OK button
+	wizard_dialog->get_ok_button()->set_visible(false);
+	add_child(wizard_dialog);
+
+	// Outer container: scroll area + nav buttons at bottom
+	VBoxContainer *outer = memnew(VBoxContainer);
+	outer->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	outer->set_custom_minimum_size(Size2(580, 400));
+	wizard_dialog->add_child(outer);
+
+	// Scrollable content area (pages go here)
+	ScrollContainer *wizard_scroll = memnew(ScrollContainer);
+	wizard_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	wizard_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	outer->add_child(wizard_scroll);
+
+	VBoxContainer *root = memnew(VBoxContainer);
+	root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	wizard_scroll->add_child(root);
+
+	// Step indicator
+	wizard_step_label = memnew(Label);
+	wizard_step_label->add_theme_font_size_override("font_size", 16);
+	root->add_child(wizard_step_label);
+	root->add_child(memnew(HSeparator));
+
+	// === Step 1: API Keys ===
+	wizard_pages[0] = memnew(VBoxContainer);
+	wizard_pages[0]->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	root->add_child(wizard_pages[0]);
+
+	Label *keys_title = memnew(Label);
+	keys_title->set_text("Connect your API keys and services.\nClick Connect to enter your API key or test a local service.");
+	keys_title->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	keys_title->add_theme_font_size_override("font_size", 12);
+	keys_title->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
+	wizard_pages[0]->add_child(keys_title);
+
+	wizard_api_key_list = memnew(VBoxContainer);
+	wizard_api_key_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	wizard_pages[0]->add_child(wizard_api_key_list);
+	// Rows are populated dynamically by _wizard_rebuild_api_key_rows()
+
+	// === Step 2: Image Generation Model ===
+	wizard_pages[1] = memnew(VBoxContainer);
+	wizard_pages[1]->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	wizard_pages[1]->set_visible(false);
+	root->add_child(wizard_pages[1]);
+
+	Label *img_title = memnew(Label);
+	img_title->set_text("Select the image generation model to use for AI-powered asset creation.\nOnly providers connected in Step 1 are shown.");
+	img_title->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	img_title->add_theme_font_size_override("font_size", 12);
+	img_title->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
+	wizard_pages[1]->add_child(img_title);
+
+	wizard_image_model_container = memnew(VBoxContainer);
+	wizard_image_model_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	wizard_pages[1]->add_child(wizard_image_model_container);
+
+	// Model selector row
+	{
+		HBoxContainer *row = memnew(HBoxContainer);
+		row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+
+		Label *name_label = memnew(Label);
+		name_label->set_text("Image Model");
+		name_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		row->add_child(name_label);
+
+		wizard_image_model_selector = memnew(OptionButton);
+		wizard_image_model_selector->set_auto_translate(false);
+		wizard_image_model_selector->set_custom_minimum_size(Size2(220, 0));
+		wizard_image_model_selector->connect("item_selected", Callable(this, "_on_wizard_image_model_selected"));
+		row->add_child(wizard_image_model_selector);
+
+		wizard_image_model_status = memnew(Label);
+		wizard_image_model_status->set_text("");
+		wizard_image_model_status->set_custom_minimum_size(Size2(90, 0));
+		row->add_child(wizard_image_model_status);
+
+		wizard_image_model_container->add_child(row);
+	}
+
+	// "No provider connected" label (hidden by default)
+	wizard_image_no_provider_label = memnew(Label);
+	wizard_image_no_provider_label->set_text("No image generation provider connected. Go back to Step 1 to connect a provider with image generation support.");
+	wizard_image_no_provider_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	wizard_image_no_provider_label->add_theme_color_override("font_color", Color(1, 0.5, 0));
+	wizard_image_no_provider_label->set_visible(false);
+	wizard_pages[1]->add_child(wizard_image_no_provider_label);
+
+	// === Step 3: Background Removal ===
+	wizard_pages[2] = memnew(VBoxContainer);
+	wizard_pages[2]->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	wizard_pages[2]->set_visible(false);
+	root->add_child(wizard_pages[2]);
+
+	Label *bg_title = memnew(Label);
+	bg_title->set_text("Select the background removal method for sprite processing.\nOnly providers connected in Step 1 are shown.");
+	bg_title->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	bg_title->add_theme_font_size_override("font_size", 12);
+	bg_title->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
+	wizard_pages[2]->add_child(bg_title);
+
+	wizard_rembg_container = memnew(VBoxContainer);
+	wizard_rembg_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	wizard_pages[2]->add_child(wizard_rembg_container);
+
+	// Method selector row
+	{
+		HBoxContainer *row = memnew(HBoxContainer);
+		row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+
+		Label *name_label = memnew(Label);
+		name_label->set_text("Remove Background");
+		name_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		row->add_child(name_label);
+
+		wizard_rembg_method_selector = memnew(OptionButton);
+		wizard_rembg_method_selector->set_auto_translate(false);
+		wizard_rembg_method_selector->set_custom_minimum_size(Size2(220, 0));
+		wizard_rembg_method_selector->connect("item_selected", Callable(this, "_on_wizard_rembg_method_selected"));
+		row->add_child(wizard_rembg_method_selector);
+
+		wizard_rembg_method_status = memnew(Label);
+		wizard_rembg_method_status->set_text("");
+		wizard_rembg_method_status->set_custom_minimum_size(Size2(90, 0));
+		row->add_child(wizard_rembg_method_status);
+
+		wizard_rembg_container->add_child(row);
+	}
+
+	// "No provider connected" label (hidden by default)
+	wizard_rembg_no_provider_label = memnew(Label);
+	wizard_rembg_no_provider_label->set_text("No background removal provider connected. Go back to Step 1 to connect a provider with background removal support.");
+	wizard_rembg_no_provider_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	wizard_rembg_no_provider_label->add_theme_color_override("font_color", Color(1, 0.5, 0));
+	wizard_rembg_no_provider_label->set_visible(false);
+	wizard_pages[2]->add_child(wizard_rembg_no_provider_label);
+
+	// === Navigation buttons (outside scroll so always visible) ===
+	outer->add_child(memnew(HSeparator));
+
+	HBoxContainer *nav = memnew(HBoxContainer);
+	nav->set_alignment(BoxContainer::ALIGNMENT_END);
+
+	wizard_skip_button = memnew(Button);
+	wizard_skip_button->set_text("Skip");
+	wizard_skip_button->connect("pressed", Callable(this, "_on_wizard_skip"));
+	nav->add_child(wizard_skip_button);
+
+	nav->add_spacer(false);
+
+	wizard_back_button = memnew(Button);
+	wizard_back_button->set_text("Back");
+	wizard_back_button->connect("pressed", Callable(this, "_on_wizard_back"));
+	nav->add_child(wizard_back_button);
+
+	wizard_next_button = memnew(Button);
+	wizard_next_button->set_text("Next");
+	wizard_next_button->connect("pressed", Callable(this, "_on_wizard_next"));
+	nav->add_child(wizard_next_button);
+
+	outer->add_child(nav);
+}
+
+void AIAssistantDock::_wizard_show_step(int p_step) {
+	wizard_step = p_step;
+
+	for (int i = 0; i < 3; i++) {
+		wizard_pages[i]->set_visible(i == p_step);
+	}
+
+	String titles[] = {
+		"Step 1 of 3 - API Keys",
+		"Step 2 of 3 - Image Generation Model",
+		"Step 3 of 3 - Background Removal"
+	};
+	wizard_step_label->set_text(titles[p_step]);
+
+	wizard_back_button->set_visible(p_step > 0);
+
+	if (p_step == 2) {
+		wizard_next_button->set_text("Finish");
 	} else {
-		rembg_method_selector->select(0);
-		rembg_api_info->set_visible(true);
-		rembg_local_info->set_visible(false);
+		wizard_next_button->set_text("Next");
 	}
 
-	// Show first page by default
-	settings_category_list->select(0);
-	_on_settings_category_selected(0);
+	// Populate dynamic selectors and fetch current config when entering Steps 2 and 3
+	if (p_step == 1) {
+		_wizard_populate_image_models();
+		_wizard_fetch_current_image_model();
+	} else if (p_step == 2) {
+		_wizard_populate_rembg_methods();
+		_wizard_fetch_current_rembg_method();
+	}
+}
 
+void AIAssistantDock::_wizard_populate_image_models() {
+	wizard_image_model_selector->clear();
+	wizard_image_model_status->set_text("");
+
+	bool has_any = false;
+
+	// Check which connected providers offer image-generation
+	bool replicate_connected = wizard_connected.has("replicate") && wizard_connected["replicate"];
+	if (replicate_connected) {
+		wizard_image_model_selector->add_item("Replicate / nano-banana-2");
+		wizard_image_model_selector->set_item_metadata(wizard_image_model_selector->get_item_count() - 1, "nano-banana-2");
+		wizard_image_model_selector->add_item("Replicate / nano-banana-pro");
+		wizard_image_model_selector->set_item_metadata(wizard_image_model_selector->get_item_count() - 1, "nano-banana-pro");
+		has_any = true;
+	}
+
+	// Pre-select based on last known model
+	if (has_any && !wizard_current_image_model.is_empty()) {
+		for (int i = 0; i < wizard_image_model_selector->get_item_count(); i++) {
+			if (wizard_image_model_selector->get_item_metadata(i) == wizard_current_image_model) {
+				wizard_image_model_selector->select(i);
+				break;
+			}
+		}
+	}
+
+	wizard_image_model_container->set_visible(has_any);
+	wizard_image_no_provider_label->set_visible(!has_any);
+}
+
+void AIAssistantDock::_wizard_fetch_current_image_model() {
+	String url = service_url + "/ai-assets/image-model";
+	Vector<String> headers = _get_headers_with_directory();
+	HTTPRequest *req = memnew(HTTPRequest);
+	add_child(req);
+	req->connect("request_completed", Callable(this, "_on_wizard_fetch_image_model_completed"));
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+	req->request(url, headers, HTTPClient::METHOD_GET);
+}
+
+void AIAssistantDock::_on_wizard_fetch_image_model_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		return;
+	}
+	String body_str = _body_to_string(p_body);
+	Ref<JSON> json;
+	json.instantiate();
+	if (json->parse(body_str) != OK) {
+		return;
+	}
+	Dictionary data = json->get_data();
+	if (data.has("model")) {
+		wizard_current_image_model = data["model"];
+		// Update selector to match
+		for (int i = 0; i < wizard_image_model_selector->get_item_count(); i++) {
+			if (wizard_image_model_selector->get_item_metadata(i) == wizard_current_image_model) {
+				wizard_image_model_selector->select(i);
+				break;
+			}
+		}
+	}
+}
+
+void AIAssistantDock::_wizard_populate_rembg_methods() {
+	wizard_rembg_method_selector->clear();
+	wizard_rembg_method_status->set_text("");
+
+	bool has_any = false;
+
+	bool replicate_connected = wizard_connected.has("replicate") && wizard_connected["replicate"];
+	bool local_rmbg_connected = wizard_connected.has("local_rmbg") && wizard_connected["local_rmbg"];
+
+	if (replicate_connected) {
+		wizard_rembg_method_selector->add_item("Replicate / bria-ai/rmbg-2.0");
+		wizard_rembg_method_selector->set_item_metadata(wizard_rembg_method_selector->get_item_count() - 1, "replicate");
+		has_any = true;
+	}
+	if (local_rmbg_connected) {
+		wizard_rembg_method_selector->add_item("Local RMBG-2.0");
+		wizard_rembg_method_selector->set_item_metadata(wizard_rembg_method_selector->get_item_count() - 1, "local");
+		has_any = true;
+	}
+
+	// Pre-select based on last known method
+	if (has_any && !wizard_current_rembg_method.is_empty()) {
+		for (int i = 0; i < wizard_rembg_method_selector->get_item_count(); i++) {
+			if (wizard_rembg_method_selector->get_item_metadata(i) == wizard_current_rembg_method) {
+				wizard_rembg_method_selector->select(i);
+				break;
+			}
+		}
+	}
+
+	wizard_rembg_container->set_visible(has_any);
+	wizard_rembg_no_provider_label->set_visible(!has_any);
+}
+
+void AIAssistantDock::_wizard_fetch_current_rembg_method() {
+	String url = service_url + "/ai-assets/removebg-method";
+	Vector<String> headers = _get_headers_with_directory();
+	HTTPRequest *req = memnew(HTTPRequest);
+	add_child(req);
+	req->connect("request_completed", Callable(this, "_on_wizard_fetch_rembg_method_completed"));
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+	req->request(url, headers, HTTPClient::METHOD_GET);
+}
+
+void AIAssistantDock::_on_wizard_fetch_rembg_method_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		return;
+	}
+	String body_str = _body_to_string(p_body);
+	Ref<JSON> json;
+	json.instantiate();
+	if (json->parse(body_str) != OK) {
+		return;
+	}
+	Dictionary data = json->get_data();
+	if (data.has("method")) {
+		wizard_current_rembg_method = data["method"];
+		// Update selector to match
+		for (int i = 0; i < wizard_rembg_method_selector->get_item_count(); i++) {
+			if (wizard_rembg_method_selector->get_item_metadata(i) == wizard_current_rembg_method) {
+				wizard_rembg_method_selector->select(i);
+				break;
+			}
+		}
+	}
+}
+
+void AIAssistantDock::_on_wizard_back() {
+	if (wizard_step > 0) {
+		_wizard_show_step(wizard_step - 1);
+	}
+}
+
+void AIAssistantDock::_on_wizard_next() {
+	if (wizard_step < 2) {
+		_wizard_show_step(wizard_step + 1);
+	} else {
+		_on_wizard_finish();
+	}
+}
+
+void AIAssistantDock::_on_wizard_skip() {
+	if (wizard_step < 2) {
+		_wizard_show_step(wizard_step + 1);
+	} else {
+		_on_wizard_finish();
+	}
+}
+
+void AIAssistantDock::_on_wizard_finish() {
+	wizard_dialog->hide();
+
+	// Show summary in chat
+	RichTextLabel *summary = memnew(RichTextLabel);
+	summary->set_use_bbcode(true);
+	summary->set_fit_content(true);
+	summary->set_selection_enabled(true);
+
+	String msg = "[color=green][b]Setup Complete[/b][/color]\n\n";
+
+	// API Keys - list all providers from capabilities
+	Array cap_keys = wizard_capabilities.keys();
+	for (int i = 0; i < cap_keys.size(); i++) {
+		String provider_id = cap_keys[i];
+		Dictionary cap = wizard_capabilities[provider_id];
+		String name = cap.get("name", provider_id);
+		bool is_connected = wizard_connected.has(provider_id) && wizard_connected[provider_id];
+		if (is_connected) {
+			msg += "[color=green]* " + name + " - connected[/color]\n";
+		} else {
+			msg += "[color=gray]* " + name + " - skipped[/color]\n";
+		}
+	}
+	// Local RMBG
+	bool local_rmbg_connected = wizard_connected.has("local_rmbg") && wizard_connected["local_rmbg"];
+	if (local_rmbg_connected) {
+		msg += "[color=green]* Local RMBG-2.0 - connected[/color]\n";
+	} else {
+		msg += "[color=gray]* Local RMBG-2.0 - skipped[/color]\n";
+	}
+
+	// Image model
+	if (!wizard_current_image_model.is_empty()) {
+		msg += "[color=green]* Image Model: " + wizard_current_image_model + "[/color]\n";
+	} else {
+		msg += "[color=gray]* Image Model - skipped[/color]\n";
+	}
+
+	// Background removal
+	if (!wizard_current_rembg_method.is_empty()) {
+		String method_label = wizard_current_rembg_method == "local" ? "Local RMBG-2.0" : "Replicate / bria-ai/rmbg-2.0";
+		msg += "[color=green]* Background Removal: " + method_label + "[/color]\n";
+	} else {
+		msg += "[color=gray]* Background Removal - skipped[/color]\n";
+	}
+
+	msg += "\nYou can reconfigure anytime by clicking the key icon in the toolbar.";
+
+	summary->set_text(msg);
+	chat_container->add_child(summary);
+	_scroll_chat_to_bottom();
+}
+
+void AIAssistantDock::_wizard_rebuild_api_key_rows() {
+	// Clear and rebuild Step 1 rows from capabilities (includes local providers)
+	while (wizard_api_key_list->get_child_count() > 0) {
+		Node *child = wizard_api_key_list->get_child(0);
+		wizard_api_key_list->remove_child(child);
+		memdelete(child);
+	}
+
+	struct RowInfo {
+		String id;
+		String name;
+		String desc;
+		bool connected;
+	};
+
+	// Separate local vs cloud providers, connected first within each group
+	Vector<RowInfo> local_connected, local_disconnected;
+	Vector<RowInfo> cloud_connected, cloud_disconnected;
+
+	Array cap_keys = wizard_capabilities.keys();
+	for (int i = 0; i < cap_keys.size(); i++) {
+		String provider_id = cap_keys[i];
+		Dictionary cap = wizard_capabilities[provider_id];
+		String name = cap.get("name", provider_id);
+		bool is_local = cap.get("local", false);
+
+		// Build description from services list
+		Array services = cap.get("services", Array());
+		HashSet<String> tags;
+		for (int s = 0; s < services.size(); s++) {
+			String svc = services[s];
+			if (svc == "image-generation") {
+				tags.insert("image gen");
+			} else if (svc == "background-removal" || svc == "atlas-split" || svc == "image-postprocess") {
+				tags.insert("image postprocessing");
+			} else if (svc == "3d-generation") {
+				tags.insert("3D gen");
+			} else if (svc == "music-generation") {
+				tags.insert("music gen");
+			} else if (svc == "gif-recording") {
+				tags.insert("game recording");
+			} else {
+				tags.insert(svc);
+			}
+		}
+		String desc;
+		for (const String &tag : tags) {
+			if (!desc.is_empty()) {
+				desc += ", ";
+			}
+			desc += tag;
+		}
+
+		bool is_connected = wizard_connected.has(provider_id) && wizard_connected[provider_id];
+		RowInfo row = { provider_id, name, desc, is_connected };
+		if (is_local) {
+			(is_connected ? local_connected : local_disconnected).push_back(row);
+		} else {
+			(is_connected ? cloud_connected : cloud_disconnected).push_back(row);
+		}
+	}
+
+	// Build final list: Local category first, then Cloud
+	Vector<RowInfo> local_rows;
+	for (int i = 0; i < local_connected.size(); i++) {
+		local_rows.push_back(local_connected[i]);
+	}
+	for (int i = 0; i < local_disconnected.size(); i++) {
+		local_rows.push_back(local_disconnected[i]);
+	}
+
+	Vector<RowInfo> cloud_rows;
+	for (int i = 0; i < cloud_connected.size(); i++) {
+		cloud_rows.push_back(cloud_connected[i]);
+	}
+	for (int i = 0; i < cloud_disconnected.size(); i++) {
+		cloud_rows.push_back(cloud_disconnected[i]);
+	}
+
+	// Add "Local" category header + rows
+	if (!local_rows.is_empty()) {
+		Label *local_header = memnew(Label);
+		local_header->set_text("Local");
+		local_header->add_theme_font_size_override("font_size", 13);
+		local_header->add_theme_color_override("font_color", Color(0.8, 0.8, 0.8));
+		wizard_api_key_list->add_child(local_header);
+	}
+	for (int i = 0; i < local_rows.size(); i++) {
+		VBoxContainer *item = memnew(VBoxContainer);
+		item->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		item->set_meta("provider_id", local_rows[i].id);
+
+		HBoxContainer *row = memnew(HBoxContainer);
+		row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+
+		Label *name_label = memnew(Label);
+		name_label->set_text(local_rows[i].name);
+		name_label->set_auto_translate(false);
+		name_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		row->add_child(name_label);
+
+		Label *desc = memnew(Label);
+		desc->set_text(local_rows[i].desc);
+		desc->set_auto_translate(false);
+		desc->add_theme_font_size_override("font_size", 11);
+		desc->add_theme_color_override("font_color", Color(0.5, 0.5, 0.5));
+		desc->set_custom_minimum_size(Size2(180, 0));
+		row->add_child(desc);
+
+		if (local_rows[i].connected) {
+			Label *status = memnew(Label);
+			status->set_text("Connected");
+			status->add_theme_color_override("font_color", Color(0.3, 1.0, 0.3));
+			status->set_custom_minimum_size(Size2(90, 0));
+			row->add_child(status);
+		} else {
+			Button *connect_btn = memnew(Button);
+			connect_btn->set_text("Connect");
+			connect_btn->set_custom_minimum_size(Size2(90, 0));
+			connect_btn->connect("pressed", Callable(this, "_on_wizard_api_key_connect").bind(local_rows[i].id));
+			row->add_child(connect_btn);
+		}
+
+		item->add_child(row);
+		wizard_api_key_list->add_child(item);
+	}
+
+	// Add "Cloud" category header + rows
+	if (!cloud_rows.is_empty()) {
+		Label *cloud_header = memnew(Label);
+		cloud_header->set_text("Cloud");
+		cloud_header->add_theme_font_size_override("font_size", 13);
+		cloud_header->add_theme_color_override("font_color", Color(0.8, 0.8, 0.8));
+		wizard_api_key_list->add_child(cloud_header);
+	}
+	for (int i = 0; i < cloud_rows.size(); i++) {
+		VBoxContainer *item = memnew(VBoxContainer);
+		item->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		item->set_meta("provider_id", cloud_rows[i].id);
+
+		HBoxContainer *row = memnew(HBoxContainer);
+		row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+
+		Label *name_label = memnew(Label);
+		name_label->set_text(cloud_rows[i].name);
+		name_label->set_auto_translate(false);
+		name_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		row->add_child(name_label);
+
+		Label *desc = memnew(Label);
+		desc->set_text(cloud_rows[i].desc);
+		desc->set_auto_translate(false);
+		desc->add_theme_font_size_override("font_size", 11);
+		desc->add_theme_color_override("font_color", Color(0.5, 0.5, 0.5));
+		desc->set_custom_minimum_size(Size2(180, 0));
+		row->add_child(desc);
+
+		if (cloud_rows[i].connected) {
+			Label *status = memnew(Label);
+			status->set_text("Connected");
+			status->add_theme_color_override("font_color", Color(0.3, 1.0, 0.3));
+			status->set_custom_minimum_size(Size2(90, 0));
+			row->add_child(status);
+		} else {
+			Button *connect_btn = memnew(Button);
+			connect_btn->set_text("Connect");
+			connect_btn->set_custom_minimum_size(Size2(90, 0));
+			connect_btn->connect("pressed", Callable(this, "_on_wizard_api_key_connect").bind(cloud_rows[i].id));
+			row->add_child(connect_btn);
+		}
+
+		item->add_child(row);
+		wizard_api_key_list->add_child(item);
+	}
+}
+
+void AIAssistantDock::_on_wizard_api_key_connect(const String &p_provider_id) {
+	// Find the item by provider_id metadata
+	VBoxContainer *item = nullptr;
+	for (int i = 0; i < wizard_api_key_list->get_child_count(); i++) {
+		VBoxContainer *candidate = Object::cast_to<VBoxContainer>(wizard_api_key_list->get_child(i));
+		if (candidate && candidate->has_meta("provider_id") && String(candidate->get_meta("provider_id")) == p_provider_id) {
+			item = candidate;
+			break;
+		}
+	}
+	if (!item || item->get_child_count() > 1) {
+		return; // Not found or already expanded
+	}
+
+	// Check if this is a local provider (health check instead of API key)
+	bool is_local = false;
+	String health_check_url;
+	if (wizard_capabilities.has(p_provider_id)) {
+		Dictionary cap = wizard_capabilities[p_provider_id];
+		is_local = cap.get("local", false);
+		health_check_url = cap.get("healthCheck", "");
+	}
+
+	if (is_local && !health_check_url.is_empty()) {
+		// Health check instead of key input
+		HBoxContainer *status_row = memnew(HBoxContainer);
+		Label *status = memnew(Label);
+		status->set_text("Testing...");
+		status->add_theme_color_override("font_color", Color(1, 1, 0));
+		status_row->add_child(status);
+		item->add_child(status_row);
+
+		String url = service_url + health_check_url;
+		Vector<String> headers = _get_headers_with_directory();
+		HTTPRequest *req = memnew(HTTPRequest);
+		add_child(req);
+		req->connect("request_completed", Callable(this, "_on_wizard_local_health_completed").bind(p_provider_id));
+		req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+		req->request(url, headers, HTTPClient::METHOD_GET);
+	} else {
+		// API key input for anthropic or replicate
+		HBoxContainer *key_row = memnew(HBoxContainer);
+		key_row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+
+		LineEdit *key_input = memnew(LineEdit);
+		key_input->set_placeholder("Enter API key...");
+		key_input->set_secret(true);
+		key_input->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		key_row->add_child(key_input);
+
+		Label *status_label = memnew(Label);
+		status_label->set_text("");
+		status_label->set_custom_minimum_size(Size2(80, 0));
+		key_row->add_child(status_label);
+
+		Button *submit_btn = memnew(Button);
+		submit_btn->set_text("Save");
+		submit_btn->connect("pressed", Callable(this, "_on_wizard_api_key_submit").bind(p_provider_id));
+		key_row->add_child(submit_btn);
+
+		item->add_child(key_row);
+		key_input->grab_focus();
+	}
+}
+
+void AIAssistantDock::_on_wizard_api_key_submit(const String &p_provider_id) {
+	// Find the item by provider_id metadata
+	VBoxContainer *item = nullptr;
+	for (int i = 0; i < wizard_api_key_list->get_child_count(); i++) {
+		VBoxContainer *candidate = Object::cast_to<VBoxContainer>(wizard_api_key_list->get_child(i));
+		if (candidate && candidate->has_meta("provider_id") && String(candidate->get_meta("provider_id")) == p_provider_id) {
+			item = candidate;
+			break;
+		}
+	}
+	if (!item || item->get_child_count() < 2) {
+		return;
+	}
+
+	HBoxContainer *key_row = Object::cast_to<HBoxContainer>(item->get_child(1));
+	if (!key_row) {
+		return;
+	}
+
+	LineEdit *key_input = Object::cast_to<LineEdit>(key_row->get_child(0));
+	Label *status = Object::cast_to<Label>(key_row->get_child(1));
+	if (!key_input || !status) {
+		return;
+	}
+
+	String key = key_input->get_text().strip_edges();
+	if (key.is_empty()) {
+		status->set_text("Enter a key");
+		status->add_theme_color_override("font_color", Color(1, 0.5, 0));
+		return;
+	}
+
+	status->set_text("Saving...");
+	status->add_theme_color_override("font_color", Color(1, 1, 0));
+
+	String url = service_url + "/provider/" + p_provider_id + "/api-key";
+	Dictionary body;
+	body["apiKey"] = key;
+
+	Vector<String> headers = _get_headers_with_directory();
+	HTTPRequest *req = memnew(HTTPRequest);
+	add_child(req);
+	req->connect("request_completed", Callable(this, "_on_wizard_api_key_completed").bind(p_provider_id));
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+	req->request(url, headers, HTTPClient::METHOD_POST, JSON::stringify(body));
+}
+
+void AIAssistantDock::_on_wizard_api_key_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, const String &p_provider_id) {
+	// Find the item by provider_id metadata
+	VBoxContainer *item = nullptr;
+	for (int i = 0; i < wizard_api_key_list->get_child_count(); i++) {
+		VBoxContainer *candidate = Object::cast_to<VBoxContainer>(wizard_api_key_list->get_child(i));
+		if (candidate && candidate->has_meta("provider_id") && String(candidate->get_meta("provider_id")) == p_provider_id) {
+			item = candidate;
+			break;
+		}
+	}
+	if (!item || item->get_child_count() < 2) {
+		return;
+	}
+	HBoxContainer *key_row = Object::cast_to<HBoxContainer>(item->get_child(1));
+	if (!key_row) {
+		return;
+	}
+	Label *status = Object::cast_to<Label>(key_row->get_child(1));
+	if (!status) {
+		return;
+	}
+
+	if (p_result != HTTPRequest::RESULT_SUCCESS) {
+		status->set_text("Connection error");
+		status->add_theme_color_override("font_color", Color(1, 0, 0));
+		return;
+	}
+
+	if (p_code == 200) {
+		status->set_text("Connected!");
+		status->add_theme_color_override("font_color", Color(0.3, 1.0, 0.3));
+
+		// Set connected flag
+		wizard_connected.insert(p_provider_id, true);
+
+		// Replace Connect button with "Connected" label in header row
+		HBoxContainer *header_row = Object::cast_to<HBoxContainer>(item->get_child(0));
+		if (header_row) {
+			int last = header_row->get_child_count() - 1;
+			Button *btn = Object::cast_to<Button>(header_row->get_child(last));
+			if (btn) {
+				btn->queue_free();
+				Label *connected = memnew(Label);
+				connected->set_text("Connected");
+				connected->add_theme_color_override("font_color", Color(0.3, 1.0, 0.3));
+				connected->set_custom_minimum_size(Size2(90, 0));
+				header_row->add_child(connected);
+			}
+		}
+
+		// Refresh providers for model menu
+		_fetch_providers();
+	} else if (p_code == 401) {
+		status->set_text("Invalid key");
+		status->add_theme_color_override("font_color", Color(1, 0, 0));
+	} else {
+		status->set_text("Error (" + itos(p_code) + ")");
+		status->add_theme_color_override("font_color", Color(1, 0, 0));
+	}
+}
+
+void AIAssistantDock::_on_wizard_local_health_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, const String &p_provider_id) {
+	// Find the local provider row by metadata
+	VBoxContainer *item = nullptr;
+	for (int i = 0; i < wizard_api_key_list->get_child_count(); i++) {
+		VBoxContainer *candidate = Object::cast_to<VBoxContainer>(wizard_api_key_list->get_child(i));
+		if (candidate && candidate->has_meta("provider_id") && String(candidate->get_meta("provider_id")) == p_provider_id) {
+			item = candidate;
+			break;
+		}
+	}
+	if (!item) {
+		return;
+	}
+
+	// Update expanded status row if present (user clicked Connect)
+	if (item->get_child_count() >= 2) {
+		HBoxContainer *status_row = Object::cast_to<HBoxContainer>(item->get_child(1));
+		if (status_row && status_row->get_child_count() >= 1) {
+			Label *status = Object::cast_to<Label>(status_row->get_child(0));
+			if (status) {
+				if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+					status->set_text("Service not running");
+					status->add_theme_color_override("font_color", Color(1, 0, 0));
+				} else {
+					status->set_text("Connected!");
+					status->add_theme_color_override("font_color", Color(0.3, 1.0, 0.3));
+				}
+			}
+		}
+	}
+
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		return;
+	}
+
+	wizard_connected.insert(p_provider_id, true);
+
+	// Replace Connect button with "Connected" label in header row
+	HBoxContainer *header_row = Object::cast_to<HBoxContainer>(item->get_child(0));
+	if (header_row) {
+		int last = header_row->get_child_count() - 1;
+		Button *btn = Object::cast_to<Button>(header_row->get_child(last));
+		if (btn) {
+			btn->queue_free();
+			Label *connected = memnew(Label);
+			connected->set_text("Connected");
+			connected->add_theme_color_override("font_color", Color(0.3, 1.0, 0.3));
+			connected->set_custom_minimum_size(Size2(90, 0));
+			header_row->add_child(connected);
+		}
+	}
+}
+
+void AIAssistantDock::_on_wizard_image_model_selected(int p_index) {
+	if (p_index < 0 || p_index >= wizard_image_model_selector->get_item_count()) {
+		return;
+	}
+	String model = wizard_image_model_selector->get_item_metadata(p_index);
+
+	wizard_image_model_status->set_text("Saving...");
+	wizard_image_model_status->add_theme_color_override("font_color", Color(1, 1, 0));
+
+	Dictionary body;
+	body["model"] = model;
+	String url = service_url + "/ai-assets/image-model";
+	Vector<String> headers = _get_headers_with_directory();
+	HTTPRequest *req = memnew(HTTPRequest);
+	add_child(req);
+	req->connect("request_completed", Callable(this, "_on_wizard_image_model_saved"));
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+	req->request(url, headers, HTTPClient::METHOD_POST, JSON::stringify(body));
+}
+
+void AIAssistantDock::_on_wizard_image_model_saved(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (!wizard_image_model_status) {
+		return;
+	}
+	if (p_result == HTTPRequest::RESULT_SUCCESS && p_code == 200) {
+		wizard_image_model_status->set_text("Saved");
+		wizard_image_model_status->add_theme_color_override("font_color", Color(0.3, 1.0, 0.3));
+		int sel = wizard_image_model_selector->get_selected();
+		if (sel >= 0) {
+			wizard_current_image_model = wizard_image_model_selector->get_item_metadata(sel);
+		}
+	} else {
+		wizard_image_model_status->set_text("Failed");
+		wizard_image_model_status->add_theme_color_override("font_color", Color(1, 0, 0));
+	}
+}
+
+void AIAssistantDock::_on_wizard_rembg_method_selected(int p_index) {
+	if (p_index < 0 || p_index >= wizard_rembg_method_selector->get_item_count()) {
+		return;
+	}
+	String method = wizard_rembg_method_selector->get_item_metadata(p_index);
+
+	wizard_rembg_method_status->set_text("Saving...");
+	wizard_rembg_method_status->add_theme_color_override("font_color", Color(1, 1, 0));
+
+	Dictionary body;
+	body["method"] = method;
+	String url = service_url + "/ai-assets/removebg-method";
+	Vector<String> headers = _get_headers_with_directory();
+	HTTPRequest *req = memnew(HTTPRequest);
+	add_child(req);
+	req->connect("request_completed", Callable(this, "_on_wizard_rembg_method_saved"));
+	req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+	req->request(url, headers, HTTPClient::METHOD_POST, JSON::stringify(body));
+}
+
+void AIAssistantDock::_on_wizard_rembg_method_saved(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (!wizard_rembg_method_status) {
+		return;
+	}
+	if (p_result == HTTPRequest::RESULT_SUCCESS && p_code == 200) {
+		wizard_rembg_method_status->set_text("Saved");
+		wizard_rembg_method_status->add_theme_color_override("font_color", Color(0.3, 1.0, 0.3));
+		int sel = wizard_rembg_method_selector->get_selected();
+		if (sel >= 0) {
+			wizard_current_rembg_method = wizard_rembg_method_selector->get_item_metadata(sel);
+		}
+	} else {
+		wizard_rembg_method_status->set_text("Failed");
+		wizard_rembg_method_status->add_theme_color_override("font_color", Color(1, 0, 0));
+	}
+}
+
+void AIAssistantDock::_on_settings_pressed() {
 	// Load project prompt (CLAUDE.md)
 	project_prompt_edit->set_text(_load_project_prompt());
 	String prompt_path = _get_project_directory().path_join("CLAUDE.md");
@@ -1667,98 +2480,7 @@ void AIAssistantDock::_on_settings_pressed() {
 	settings_dialog->popup_centered();
 }
 
-void AIAssistantDock::_on_replicate_test_pressed() {
-	_test_provider("replicate", replicate_token_input, replicate_test_button, replicate_status_label);
-}
-
-void AIAssistantDock::_on_meshy_test_pressed() {
-	_test_provider("meshy", meshy_token_input, meshy_test_button, meshy_status_label);
-}
-
-void AIAssistantDock::_test_provider(const String &p_provider_id, LineEdit *p_input, Button *p_button, Label *p_status) {
-	String token = p_input->get_text().strip_edges();
-	if (token.is_empty()) {
-		p_status->set_text("No key");
-		p_status->add_theme_color_override("font_color", Color(1, 0.5, 0));
-		return;
-	}
-
-	p_status->set_text("Testing...");
-	p_status->add_theme_color_override("font_color", Color(1, 1, 0));
-	p_button->set_disabled(true);
-	settings_testing_provider = p_provider_id;
-
-	String url = service_url + "/ai-assets/providers/configure";
-	Dictionary body;
-	body["providerId"] = p_provider_id;
-	body["apiKey"] = token;
-
-	String json_body = JSON::stringify(body);
-	print_line("[AI Settings] Testing provider: " + p_provider_id + " url: " + url);
-	print_line("[AI Settings] Body: " + json_body);
-
-	Vector<String> headers = _get_headers_with_directory();
-	Error err = settings_http_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
-	if (err != OK) {
-		print_line("[AI Settings] HTTPRequest::request() failed with error: " + itos(err));
-		p_status->set_text("Req error");
-		p_status->add_theme_color_override("font_color", Color(1, 0, 0));
-		p_button->set_disabled(false);
-	}
-}
-
 void AIAssistantDock::_on_settings_save_pressed() {
-	Vector<String> headers = _get_headers_with_directory();
-	bool any_saved = false;
-
-	// Save Replicate token to .env.keys
-	String replicate_token = replicate_token_input->get_text().strip_edges();
-	if (!replicate_token.is_empty()) {
-		_write_env_key("REPLICATE_API_TOKEN", replicate_token);
-		any_saved = true;
-
-		// Configure on running server (fire-and-forget)
-		Dictionary body;
-		body["providerId"] = "replicate";
-		body["apiKey"] = replicate_token;
-		String url = service_url + "/ai-assets/providers/configure";
-		HTTPRequest *req = memnew(HTTPRequest);
-		add_child(req);
-		req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
-		req->request(url, headers, HTTPClient::METHOD_POST, JSON::stringify(body));
-	}
-
-	// Save Meshy token to .env.keys
-	String meshy_token = meshy_token_input->get_text().strip_edges();
-	if (!meshy_token.is_empty()) {
-		_write_env_key("MESHY_API_KEY", meshy_token);
-		any_saved = true;
-
-		Dictionary body;
-		body["providerId"] = "meshy";
-		body["apiKey"] = meshy_token;
-		String url = service_url + "/ai-assets/providers/configure";
-		HTTPRequest *req = memnew(HTTPRequest);
-		add_child(req);
-		req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
-		req->request(url, headers, HTTPClient::METHOD_POST, JSON::stringify(body));
-	}
-
-	// Save PhotoRoom API key to .env.keys
-	String removebg_token = removebg_token_input->get_text().strip_edges();
-	if (!removebg_token.is_empty()) {
-		_write_env_key("PHOTOROOM_API_KEY", removebg_token);
-		any_saved = true;
-	}
-
-	// Save rembg method to .env.keys
-	String rembg_method = rembg_method_selector->get_selected_id() == 1 ? "local" : "api";
-	_write_env_key("REMBG_METHOD", rembg_method);
-
-	if (any_saved) {
-		print_line("[AI Settings] API keys saved to " + _get_env_keys_path());
-	}
-
 	// Save project prompt (CLAUDE.md)
 	String prompt_content = project_prompt_edit->get_text();
 	if (!prompt_content.is_empty()) {
@@ -1772,193 +2494,7 @@ void AIAssistantDock::_on_settings_save_pressed() {
 	}
 }
 
-void AIAssistantDock::_on_settings_category_selected(int p_index) {
-	settings_providers_page->set_visible(p_index == 0);
-	settings_texture_page->set_visible(p_index == 1);
-	settings_prompt_page->set_visible(p_index == 2);
-}
 
-void AIAssistantDock::_on_rembg_method_selected(int p_index) {
-	rembg_api_info->set_visible(p_index == 0);
-	rembg_local_info->set_visible(p_index == 1);
-}
-
-void AIAssistantDock::_on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	// Resolve which provider's UI to update
-	Button *btn = replicate_test_button;
-	Label *status = replicate_status_label;
-	if (settings_testing_provider == "meshy") {
-		btn = meshy_test_button;
-		status = meshy_status_label;
-	}
-	btn->set_disabled(false);
-
-	String response_text = _body_to_string(p_body);
-	print_line("[AI Settings] Test result for " + settings_testing_provider + ": http_result=" + itos(p_result) + " code=" + itos(p_code) + " body=" + response_text);
-
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		status->set_text("Failed");
-		status->add_theme_color_override("font_color", Color(1, 0, 0));
-		return;
-	}
-
-	JSON json;
-	Error err = json.parse(response_text);
-
-	if (err != OK) {
-		status->set_text("Error");
-		status->add_theme_color_override("font_color", Color(1, 0, 0));
-		return;
-	}
-
-	Dictionary result = json.get_data();
-	if (result.get("success", false)) {
-		status->set_text("Connected!");
-		status->add_theme_color_override("font_color", Color(0, 1, 0));
-		_add_system_message(settings_testing_provider.capitalize() + " provider configured successfully!");
-	} else {
-		String error_msg = result.get("error", "Unknown error");
-		print_line("[AI Settings] Provider returned error: " + error_msg);
-		status->set_text("Failed");
-		status->add_theme_color_override("font_color", Color(1, 0, 0));
-	}
-}
-
-// ── .env.keys file helpers ────────────────────────────────────────────────────
-
-String AIAssistantDock::_get_engine_root_path() const {
-	// Engine executable is at: <engine_root>/godot/bin/godot.exe
-	// or in packaged form:     <engine_root>/bin/makabaka.exe
-	String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
-	// Try dev layout first: godot/bin/ → engine root is ../../
-	String dev_root = exe_dir.path_join("../..").simplify_path();
-	if (FileAccess::exists(dev_root.path_join(".env.keys")) || FileAccess::exists(dev_root.path_join(".env"))) {
-		return dev_root;
-	}
-	// Packaged layout: bin/ → engine root is ../
-	String pkg_root = exe_dir.path_join("..").simplify_path();
-	return pkg_root;
-}
-
-String AIAssistantDock::_get_env_keys_path() const {
-	return _get_engine_root_path().path_join(".env.keys");
-}
-
-HashMap<String, String> AIAssistantDock::_read_env_keys() const {
-	HashMap<String, String> result;
-	String path = _get_env_keys_path();
-	Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
-	if (f.is_null()) {
-		return result;
-	}
-	while (!f->eof_reached()) {
-		String line = f->get_line().strip_edges();
-		if (line.is_empty() || line.begins_with("#")) {
-			continue;
-		}
-		int eq = line.find("=");
-		if (eq < 1) {
-			continue;
-		}
-		String key = line.substr(0, eq).strip_edges();
-		String value = line.substr(eq + 1);
-		result[key] = value;
-	}
-	return result;
-}
-
-String AIAssistantDock::_get_env_key(const String &p_key) const {
-	HashMap<String, String> keys = _read_env_keys();
-	if (keys.has(p_key)) {
-		return keys[p_key];
-	}
-	return "";
-}
-
-void AIAssistantDock::_write_env_key(const String &p_key, const String &p_value) {
-	String path = _get_env_keys_path();
-
-	// Read existing content preserving comments and structure
-	Vector<String> lines;
-	bool key_found = false;
-	Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
-	if (f.is_valid()) {
-		while (!f->eof_reached()) {
-			String line = f->get_line();
-			// Check if this line sets the key we want to update
-			String trimmed = line.strip_edges();
-			if (!trimmed.is_empty() && !trimmed.begins_with("#")) {
-				int eq = trimmed.find("=");
-				if (eq >= 1 && trimmed.substr(0, eq).strip_edges() == p_key) {
-					lines.push_back(p_key + "=" + p_value);
-					key_found = true;
-					continue;
-				}
-			}
-			lines.push_back(line);
-		}
-		f.unref();
-	}
-
-	// If key wasn't found, append it
-	if (!key_found) {
-		if (lines.is_empty()) {
-			lines.push_back("## RedBlue Engine — API Keys (CONFIDENTIAL)");
-			lines.push_back("");
-		}
-		lines.push_back(p_key + "=" + p_value);
-	}
-
-	// Write back
-	Ref<FileAccess> fw = FileAccess::open(path, FileAccess::WRITE);
-	if (fw.is_valid()) {
-		for (int i = 0; i < lines.size(); i++) {
-			fw->store_line(lines[i]);
-		}
-	}
-}
-
-void AIAssistantDock::_auto_configure_providers() {
-	// Send all saved provider API keys to the running server.
-	// Called on connect/reconnect so the server always has the keys.
-	// Read from .env.keys file
-	struct ProviderEntry {
-		const char *id;
-		const char *env_key;
-	};
-	ProviderEntry entries[] = {
-		{ "replicate", "REPLICATE_API_TOKEN" },
-		{ "meshy", "MESHY_API_KEY" },
-		{ "doubao", "DOUBAO_API_KEY" },
-		{ "suno", "SUNO_API_KEY" },
-	};
-
-	HashMap<String, String> env_keys = _read_env_keys();
-	Vector<String> headers = _get_headers_with_directory();
-
-	for (const ProviderEntry &entry : entries) {
-		String api_key;
-		if (env_keys.has(entry.env_key)) {
-			api_key = env_keys[entry.env_key];
-		}
-		if (api_key.is_empty()) {
-			continue;
-		}
-
-		Dictionary body;
-		body["providerId"] = entry.id;
-		body["apiKey"] = api_key;
-
-		String json_body = JSON::stringify(body);
-		String url = service_url + "/ai-assets/providers/configure";
-
-		// Use a one-off HTTPRequest — fire and forget
-		HTTPRequest *req = memnew(HTTPRequest);
-		add_child(req);
-		req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
-		req->request(url, headers, HTTPClient::METHOD_POST, json_body);
-	}
-}
 
 // ── Prompt Management ─────────────────────────────────────────────────────────
 
@@ -2685,7 +3221,10 @@ void AIAssistantDock::_process_slash_command(const String &p_command) {
 
 		String json_body = JSON::stringify(body);
 		Vector<String> headers = _get_headers_with_directory();
-		settings_http_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
+		HTTPRequest *req = memnew(HTTPRequest);
+		add_child(req);
+		req->connect("request_completed", callable_mp((Node *)req, &Node::queue_free).unbind(4));
+		req->request(url, headers, HTTPClient::METHOD_POST, json_body);
 	} else if (lower.begins_with("/disconnect replicate")) {
 		_add_system_message("Provider disconnection is not yet supported. Restart the engine to reset providers.");
 	} else if (lower == "/providers") {
@@ -5180,9 +5719,6 @@ void AIAssistantDock::_on_session_list_completed(int p_result, int p_code, const
 		question_poll_timer->start();
 	}
 
-	// Auto-configure saved provider keys on the server
-	_auto_configure_providers();
-
 	// Load chat history from the session
 	_load_session_history();
 
@@ -5391,11 +5927,17 @@ void AIAssistantDock::_on_provider_request_completed(int p_result, int p_code, c
 			Dictionary defaults = resp.get("default", Dictionary());
 			Array connected = resp.get("connected", Array());
 
-			// Build connected set.
+			// Store capabilities for wizard use
+			if (resp.has("capabilities")) {
+				wizard_capabilities = resp["capabilities"];
+			}
+
+			// Build connected set and store for wizard use.
 			HashSet<String> connected_set;
 			for (int i = 0; i < connected.size(); i++) {
 				connected_set.insert(String(connected[i]));
 			}
+			server_connected_providers = connected_set;
 
 			// Preserve locally-authenticated provider (may not be in server response yet).
 			if (!pending_auth_provider_id.is_empty() && auth_state == AUTH_IDLE) {
@@ -5504,6 +6046,23 @@ void AIAssistantDock::_on_provider_request_completed(int p_result, int p_code, c
 				total_models += providers[i].models.size();
 			}
 			_add_log_entry("INFO", "Loaded " + itos(total_models) + " models from " + itos(providers.size()) + " provider(s).", Color(0.7, 0.7, 0.7));
+
+			// Guide the user when no providers are authenticated — show in chat.
+			if (connected_set.is_empty()) {
+				RichTextLabel *guide = memnew(RichTextLabel);
+				guide->set_use_bbcode(true);
+				guide->set_fit_content(true);
+				guide->set_selection_enabled(true);
+				guide->set_text(
+						"[color=yellow][b]Setup Required[/b][/color]\n\n"
+						"No AI provider is connected yet. To get started:\n"
+						"1. Click [b]Select Model[/b] in the toolbar above\n"
+						"2. Choose a provider (e.g. Anthropic, OpenAI, Google)\n"
+						"3. Follow the sign-in flow to authenticate\n\n"
+						"Free models are available immediately — or connect your own API key for premium models.");
+				chat_container->add_child(guide);
+				_scroll_chat_to_bottom();
+			}
 
 			// Chain: fetch auth methods next.
 			_fetch_auth_methods();
@@ -6691,11 +7250,10 @@ void AIAssistantDock::_on_snip_pressed() {
 	String temp_path = temp_dir.path_join("snip.png");
 
 	List<String> args;
-	args.push_back("--cap:custom");
 	args.push_back("--path:" + temp_path);
 	args.push_back("--tool:rect,arrow,line,text,number,|,undo,redo,|,save,close");
 
-	print_line("[Snip] Launching: " + tool_path + " --cap:custom --path:" + temp_path);
+	print_line("[Snip] Launching: " + tool_path);
 
 	int exit_code = -1;
 	OS::get_singleton()->execute(tool_path, args, nullptr, &exit_code);
@@ -6722,6 +7280,7 @@ void AIAssistantDock::_on_snip_pressed() {
 			da->remove("snip.png");
 		}
 	}
+	// Other exit codes = user cancelled, do nothing.
 	// Other exit codes = user cancelled, do nothing.
 }
 

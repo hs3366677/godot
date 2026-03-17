@@ -77,6 +77,9 @@ public:
 
 	struct ProviderNameComparator {
 		bool operator()(const ProviderInfo &a, const ProviderInfo &b) const {
+			if (a.connected != b.connected) {
+				return a.connected;
+			}
 			return a.name.naturalnocasecmp_to(b.name) < 0;
 		}
 	};
@@ -106,32 +109,63 @@ private:
 	HBoxContainer *toolbar_container = nullptr;
 	Button *session_history_button = nullptr;
 	Button *settings_button = nullptr;
+	Button *setup_button = nullptr;
 	ColorRect *connection_indicator = nullptr;
 
-	// Settings dialog (left category list + right content pages)
+	// Setup wizard (3-step guided configuration)
+	AcceptDialog *wizard_dialog = nullptr;
+	VBoxContainer *wizard_pages[3] = {};
+	int wizard_step = 0;
+	Label *wizard_step_label = nullptr;
+	Button *wizard_back_button = nullptr;
+	Button *wizard_next_button = nullptr;
+	Button *wizard_skip_button = nullptr;
+	// Step 1: API Keys (built dynamically from server capabilities)
+	VBoxContainer *wizard_api_key_list = nullptr;
+	// Capabilities data from server (provider_id -> { name, services[], keyPrefix })
+	Dictionary wizard_capabilities;
+	// Server-reported connected providers (from /provider response "connected" array)
+	HashSet<String> server_connected_providers;
+	// Dynamic connected state per provider (includes local services like local_rmbg, local_atlas_split)
+	HashMap<String, bool> wizard_connected;
+	void _wizard_rebuild_api_key_rows();
+	void _on_wizard_api_key_connect(const String &p_provider_id);
+	void _on_wizard_api_key_submit(const String &p_provider_id);
+	void _on_wizard_api_key_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, const String &p_provider_id);
+	void _on_wizard_local_health_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, const String &p_provider_id);
+	// Step 2: Image Model selector (populated from connected providers)
+	VBoxContainer *wizard_image_model_container = nullptr;
+	OptionButton *wizard_image_model_selector = nullptr;
+	Label *wizard_image_model_status = nullptr;
+	Label *wizard_image_no_provider_label = nullptr;
+	String wizard_current_image_model; // Last saved/fetched model ID
+	void _wizard_populate_image_models();
+	void _wizard_fetch_current_image_model();
+	void _on_wizard_fetch_image_model_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_wizard_image_model_selected(int p_index);
+	void _on_wizard_image_model_saved(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	// Step 3: Background Removal selector (populated from connected providers)
+	VBoxContainer *wizard_rembg_container = nullptr;
+	OptionButton *wizard_rembg_method_selector = nullptr;
+	Label *wizard_rembg_method_status = nullptr;
+	Label *wizard_rembg_no_provider_label = nullptr;
+	String wizard_current_rembg_method; // Last saved/fetched method
+	void _wizard_populate_rembg_methods();
+	void _wizard_fetch_current_rembg_method();
+	void _on_wizard_fetch_rembg_method_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_wizard_rembg_method_selected(int p_index);
+	void _on_wizard_rembg_method_saved(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _setup_wizard_ui();
+	void _wizard_show_step(int p_step);
+	void _on_wizard_back();
+	void _on_wizard_next();
+	void _on_wizard_skip();
+	void _on_wizard_finish();
+
+	// Settings dialog
 	AcceptDialog *settings_dialog = nullptr;
-	ItemList *settings_category_list = nullptr;
-	VBoxContainer *settings_pages = nullptr;
 
-	// Page 0: Providers
-	VBoxContainer *settings_providers_page = nullptr;
-	LineEdit *replicate_token_input = nullptr;
-	Button *replicate_test_button = nullptr;
-	Label *replicate_status_label = nullptr;
-	LineEdit *meshy_token_input = nullptr;
-	Button *meshy_test_button = nullptr;
-	Label *meshy_status_label = nullptr;
-	LineEdit *removebg_token_input = nullptr;
-	HTTPRequest *settings_http_request = nullptr;
-	String settings_testing_provider;
-
-	// Page 1: Texture Processing
-	VBoxContainer *settings_texture_page = nullptr;
-	OptionButton *rembg_method_selector = nullptr;
-	Label *rembg_api_info = nullptr;
-	Label *rembg_local_info = nullptr;
-
-	// Page 2: Prompt
+	// Prompt settings
 	VBoxContainer *settings_prompt_page = nullptr;
 	TextEdit *project_prompt_edit = nullptr;
 	Label *project_prompt_path_label = nullptr;
@@ -302,6 +336,13 @@ private:
 	String session_id;
 	ConnectionStatus connection_status = DISCONNECTED;
 
+	// Reconnect timer — retries health check when initial connection fails
+	Timer *reconnect_timer = nullptr;
+	int reconnect_attempts = 0;
+	static const int MAX_RECONNECT_ATTEMPTS = 20; // ~60s at 3s intervals
+	void _on_reconnect_timeout();
+	void _schedule_reconnect();
+
 	// Chat history
 	Vector<Dictionary> chat_history;
 
@@ -355,21 +396,8 @@ private:
 	bool _is_supported_image_extension(const String &p_extension) const;
 
 	void _on_settings_pressed();
-	void _on_replicate_test_pressed();
-	void _on_meshy_test_pressed();
-	void _test_provider(const String &p_provider_id, LineEdit *p_input, Button *p_button, Label *p_status);
+	void _on_setup_pressed();
 	void _on_settings_save_pressed();
-	void _on_settings_category_selected(int p_index);
-	void _on_rembg_method_selected(int p_index);
-	void _on_settings_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-	void _auto_configure_providers();
-
-	// .env.keys file helpers
-	String _get_engine_root_path() const;
-	String _get_env_keys_path() const;
-	HashMap<String, String> _read_env_keys() const;
-	void _write_env_key(const String &p_key, const String &p_value);
-	String _get_env_key(const String &p_key) const;
 
 	// Prompt management
 	String _load_project_prompt();
